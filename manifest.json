@@ -1,0 +1,9 @@
+{
+  "Name": "AI Companion",
+  "Author": "Silvermoon",
+  "Version": "0.1.0",
+  "Description": "AI玩伴 - 代替本地联机第二个玩家，陪主人一起玩星露谷",
+  "UniqueID": "Silvermoon.AICompanion",
+  "EntryDll": "AICompanion.dll",
+  "MinimumApiVersion": "4.0.0"
+}
