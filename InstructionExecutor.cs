@@ -106,6 +106,10 @@ namespace AICompanion
                         return ExecuteEmote(instruction, monitor);
                     case "say":
                         return ExecuteSay(instruction, monitor);
+                    case "locate":
+                        return ExecuteLocate(monitor);
+                    case "warpto":
+                        return ExecuteWarpTo(instruction, monitor);
                     case "walkto":
                         return ExecuteWalkTo(instruction, monitor);
                     case "wait":
@@ -155,6 +159,38 @@ namespace AICompanion
         /// <summary>
         /// 走到指定坐标（使用游戏内建寻路，角色自己走，有动画）
         /// </summary>
+        /// <summary>
+        /// 镜头定位到角色当前位置
+        /// </summary>
+        private static InstructionResult ExecuteLocate(IMonitor monitor)
+        {
+            var player = Game1.player;
+            Game1.viewport.X = (int)player.Position.X - Game1.viewport.Width / 2;
+            Game1.viewport.Y = (int)player.Position.Y - Game1.viewport.Height / 2;
+            monitor.Log($"镜头定位到 ({player.Position.X / 64:F0},{player.Position.Y / 64:F0})", LogLevel.Info);
+            return new InstructionResult { Success = true, Action = "locate" };
+        }
+
+        /// <summary>
+        /// 传送到指定地图的指定坐标（用于出门/换地图）
+        /// </summary>
+        private static InstructionResult ExecuteWarpTo(Instruction inst, IMonitor monitor)
+        {
+            if (string.IsNullOrEmpty(inst.Npc))  // 复用 Npc 字段传目标地图名
+                return new InstructionResult { Success = false, Action = "warpTo", Error = "缺少目标地图" };
+            if (inst.X == null || inst.Y == null)
+                return new InstructionResult { Success = false, Action = "warpTo", Error = "缺少 X 或 Y" };
+
+            string targetMap = inst.Npc;
+            int tileX = inst.X.Value;
+            int tileY = inst.Y.Value;
+
+            Game1.warpFarmer(targetMap, tileX, tileY, false);
+            monitor.Log($"warpTo {targetMap} ({tileX},{tileY})", LogLevel.Info);
+
+            return new InstructionResult { Success = true, Action = "warpTo" };
+        }
+
         private static InstructionResult ExecuteWalkTo(Instruction inst, IMonitor monitor)
         {
             if (inst.X == null || inst.Y == null)
