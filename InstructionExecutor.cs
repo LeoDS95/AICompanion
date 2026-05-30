@@ -159,44 +159,18 @@ namespace AICompanion
             int targetX = inst.X.Value;
             int targetY = inst.Y.Value;
 
-            // A* 寻路（带碰撞检测）
-            var path = FindPath(curX, curY, targetX, targetY, loc, monitor);
+            // 使用游戏内建寻路（不传自定义 A* 路径）
+            player.controller = new PathFindController(player, loc, new Point(targetX, targetY), -1);
+            player.controller.nonDestructivePathing = false;
 
-            if (path == null || path.Count == 0)
+            if (player.controller.pathToEndPoint == null || player.controller.pathToEndPoint.Count == 0)
             {
-                // 调试：输出目标周围 tile 的可行走状态
-                monitor.Log($"walkTo ({targetX},{targetY}) 寻路失败，调试信息：", LogLevel.Warn);
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    for (int dx = -1; dx <= 1; dx++)
-                    {
-                        int tx = targetX + dx;
-                        int ty = targetY + dy;
-                        bool walkable = IsWalkable(tx, ty, loc, loc.Map.Layers[0].LayerWidth, loc.Map.Layers[0].LayerHeight);
-                        monitor.Log($"  tile ({tx},{ty}): {(walkable ? "可走" : "不可走")}", LogLevel.Warn);
-                    }
-                }
-                // 也检查起点周围
-                monitor.Log($"起点 ({curX},{curY}) 周围：", LogLevel.Warn);
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    for (int dx = -1; dx <= 1; dx++)
-                    {
-                        if (dx == 0 && dy == 0) continue;
-                        int tx = curX + dx;
-                        int ty = curY + dy;
-                        bool walkable = IsWalkable(tx, ty, loc, loc.Map.Layers[0].LayerWidth, loc.Map.Layers[0].LayerHeight);
-                        monitor.Log($"  tile ({tx},{ty}): {(walkable ? "可走" : "不可走")}", LogLevel.Warn);
-                    }
-                }
-
-                return new InstructionResult { Success = false, Action = "walkTo", Error = "无可达路径" };
+                player.controller = null;
+                monitor.Log($"walkTo ({targetX},{targetY}) 内建寻路失败", LogLevel.Warn);
+                return new InstructionResult { Success = false, Action = "walkTo", Error = "内建寻路失败" };
             }
 
-            player.controller = new PathFindController(path, player, loc);
-            player.controller.nonDestructivePathing = true;
-
-            monitor.Log($"walkTo ({targetX},{targetY})：开始行走，路径 {path.Count} 步", LogLevel.Info);
+            monitor.Log($"walkTo ({targetX},{targetY})：内建寻路，路径 {player.controller.pathToEndPoint.Count} 步", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "walkTo" };
         }
 
