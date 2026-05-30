@@ -42,6 +42,7 @@ namespace AICompanion
 
         /// <summary>
         /// 读取 instruction.json，返回指令（没有文件或解析失败返回 null）
+        /// 注意：读取后不删除，由调用方在执行成功后调用 ConfirmConsumed 删除
         /// </summary>
         public static Instruction ReadInstruction(IMonitor monitor)
         {
@@ -50,22 +51,32 @@ namespace AICompanion
                 if (!File.Exists(GameConfig.InstructionFile))
                     return null;
 
-                // 读取后立即清空文件（防止重复读取）
                 var json = File.ReadAllText(GameConfig.InstructionFile);
-                File.WriteAllText(GameConfig.InstructionFile, "");
-
                 if (string.IsNullOrWhiteSpace(json))
                     return null;
 
-                var instruction = JsonSerializer.Deserialize<Instruction>(json, JsonOptions);
-                // 删除指令文件
-                try { File.Delete(GameConfig.InstructionFile); } catch { }
-                return instruction;
+                return JsonSerializer.Deserialize<Instruction>(json, JsonOptions);
             }
             catch (Exception ex)
             {
                 monitor.Log($"读取指令出错: {ex.Message}", LogLevel.Warn);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 确认指令已消费，删除指令文件
+        /// </summary>
+        public static void ConfirmConsumed(IMonitor monitor)
+        {
+            try
+            {
+                if (File.Exists(GameConfig.InstructionFile))
+                    File.Delete(GameConfig.InstructionFile);
+            }
+            catch (Exception ex)
+            {
+                monitor.Log($"删除指令文件出错: {ex.Message}", LogLevel.Warn);
             }
         }
 

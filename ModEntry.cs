@@ -53,19 +53,28 @@ namespace AICompanion
             var instruction = InstructionExecutor.ReadInstruction(Monitor);
             if (instruction != null)
             {
-                // 去重：同样的指令不重复执行
-                var hash = $"{instruction.Action}:{instruction.X}:{instruction.Y}:{instruction.Slot}:{instruction.Npc}:{instruction.Text}";
-                if (hash == lastInstructionHash)
+                // 去重：同样的指令不重复执行（walkTo 除外，允许重试）
+                if (instruction.Action?.ToLower() != "walkto")
                 {
-                    return;
+                    var hash = $"{instruction.Action}:{instruction.X}:{instruction.Y}:{instruction.Slot}:{instruction.Npc}:{instruction.Text}";
+                    if (hash == lastInstructionHash)
+                    {
+                        return;
+                    }
+                    lastInstructionHash = hash;
                 }
-                lastInstructionHash = hash;
 
                 var result = InstructionExecutor.Execute(instruction, Monitor);
 
-                if (!result.Success)
+                if (result.Success)
                 {
-                    Monitor.Log($"指令执行失败: {result.Error}", LogLevel.Warn);
+                    // 执行成功，删除指令文件
+                    InstructionExecutor.ConfirmConsumed(Monitor);
+                }
+                else
+                {
+                    // 执行失败，保留文件等待重试
+                    Monitor.Log($"指令 [{instruction.Action}] 失败: {result.Error}，保留文件等待重试", LogLevel.Warn);
                 }
 
                 // 特殊处理 wait 指令
