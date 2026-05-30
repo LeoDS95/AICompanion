@@ -301,9 +301,8 @@ namespace AICompanion
             if (x == playerX && y == playerY)
                 return true;
 
-            // 使用游戏碰撞检测
-            var rect = new Microsoft.Xna.Framework.Rectangle(x * 64, y * 64, 64, 64);
-            return !loc.isCollidingPosition(rect, Game1.viewport, true, 0, false, Game1.player);
+            // isTilePassable 只检查 Back/Buildings/Front 层 tile 属性，不管家具碰撞体
+            return loc.isTilePassable(new xTile.Dimensions.Location(x, y), Game1.viewport);
         }
 
         /// <summary>
