@@ -24,6 +24,7 @@ namespace AICompanion
 
         // ── 配置 ──────────────────────────────────────────────────────
         private ModConfig Config;
+        private string _lastTestResult = "尚未测试";
 
         // ── Python 进程 ───────────────────────────────────────────────
         private Process _pythonProcess = null;
@@ -124,7 +125,7 @@ namespace AICompanion
                 },
                 name: () => "API 提供商",
                 tooltip: () => "选择 LLM 提供商，会自动填充 Base URL 和默认模型",
-                allowedValues: new[] { "OpenAI", "Claude", "Gemini", "XAI", "DeepSeek", "MiMo", "自定义" }
+                allowedValues: new[] { "OpenAI", "Claude", "Gemini", "XAI", "DeepSeek", "MiMo", "MiMo Plan", "自定义" }
             );
 
             configMenu.AddTextOption(
@@ -135,7 +136,9 @@ namespace AICompanion
                 tooltip: () =>
                 {
                     if (Config.LLMProvider == "MiMo")
-                        return "MiMo 有两种 Key:\n1. Token Plan（订阅制，按月/年）\n2. Credits（按量付费）\n两种都可以用，去 platform.xiaomimimo.com 获取";
+                        return "MiMo Credits（按量付费）：platform.xiaomimimo.com 获取";
+                    if (Config.LLMProvider == "MiMo Plan")
+                        return "MiMo Token Plan（订阅制，按月/年）：platform.xiaomimimo.com 获取";
                     return "输入你的 API Key";
                 }
             );
@@ -186,7 +189,7 @@ namespace AICompanion
 
             configMenu.AddParagraph(
                 mod: ModManifest,
-                text: () => "点击下面的开关测试 API 连接，结果会显示在 SMAPI 控制台"
+                text: () => "点击开关测试 API 连接，结果会显示在下方和 SMAPI 控制台"
             );
 
             configMenu.AddBoolOption(
@@ -201,6 +204,11 @@ namespace AICompanion
                 },
                 name: () => "▶ 测试 API 连接",
                 tooltip: () => "点击测试当前 API 配置是否正确"
+            );
+
+            configMenu.AddParagraph(
+                mod: ModManifest,
+                text: () => _lastTestResult
             );
 
             Monitor.Log("[GMCM] 设置页面注册成功", LogLevel.Info);
@@ -219,6 +227,7 @@ namespace AICompanion
 
             if (string.IsNullOrEmpty(Config.APIKey))
             {
+                _lastTestResult = "❌ API Key 为空！";
                 Monitor.Log("[API 测试] ❌ API Key 为空！", LogLevel.Error);
                 return;
             }
@@ -261,18 +270,21 @@ namespace AICompanion
                 if (response.IsSuccessStatusCode)
                 {
                     var responseBody = response.Content.ReadAsStringAsync().Result;
+                    _lastTestResult = $"✅ 连接成功！模型: {Config.Model}";
                     Monitor.Log($"[API 测试] ✅ 连接成功！", LogLevel.Info);
                     Monitor.Log($"[API 测试] 响应: {responseBody[..Math.Min(200, responseBody.Length)]}...", LogLevel.Info);
                 }
                 else
                 {
                     var errorBody = response.Content.ReadAsStringAsync().Result;
+                    _lastTestResult = $"❌ 连接失败: {response.StatusCode}";
                     Monitor.Log($"[API 测试] ❌ 连接失败: {response.StatusCode}", LogLevel.Error);
                     Monitor.Log($"[API 测试] 错误: {errorBody[..Math.Min(200, errorBody.Length)]}", LogLevel.Error);
                 }
             }
             catch (Exception ex)
             {
+                _lastTestResult = $"❌ 异常: {ex.Message}";
                 Monitor.Log($"[API 测试] ❌ 异常: {ex.Message}", LogLevel.Error);
             }
         }

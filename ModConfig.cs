@@ -62,7 +62,14 @@ namespace AICompanion
             },
             ["MiMo"] = new LLMPreset
             {
-                Name = "MiMo",
+                Name = "MiMo (Credits)",
+                BaseURL = "https://api.xiaomimimo.com/v1",
+                DefaultModel = "mimo-v2.5-pro",
+                Models = new[] { "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash" }
+            },
+            ["MiMo Plan"] = new LLMPreset
+            {
+                Name = "MiMo (Token Plan)",
                 BaseURL = "https://api.xiaomimimo.com/v1",
                 DefaultModel = "mimo-v2.5-pro",
                 Models = new[] { "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash" }
