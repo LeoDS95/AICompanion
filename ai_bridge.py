@@ -1,15 +1,10 @@
 """
-ai_bridge.py — AI Companion 控制脚本 v2.0
+ai_bridge.py — AI Companion 控制脚本 v5.0
 ==========================================
-功能：
-- 读取游戏状态 (state.json)
-- 读取玩家消息 (chat.json)
-- 决策并执行指令 (instruction.json)
-- Action Queue：AI 一次给多个指令，逐条执行
-- 中断逻辑：危险时不打断，安全时问 LLM 判断
+纯执行器：读状态 → 发给 LLM → 执行 LLM 的指令
 
 架构：
-  游戏 ←→ ai_bridge.py ←→ LLM (OpenClaw)
+  游戏 state.json → ai_bridge.py → LLM API → instruction.json → 游戏
 """
 
 import json
@@ -32,147 +27,18 @@ else:
 STATE_FILE = os.path.join(AI_DIR, "state.json")
 CHAT_FILE = os.path.join(AI_DIR, "chat.json")
 INSTRUCTION_FILE = os.path.join(AI_DIR, "instruction.json")
-REPLY_FILE = os.path.join(AI_DIR, "reply.json")
 
-POLL_INTERVAL = 0.5
-QUEUE_THRESHOLD = 0.8  # 执行完 80% 后问 AI 要新指令
-INSTRUCTION_DELAY_MIN = 3.0  # 指令间最小延迟（秒）
-INSTRUCTION_DELAY_MAX = 5.0  # 指令间最大延迟（秒）
+POLL_INTERVAL = 2.0  # 每 2 秒检查一次状态变化
+LLM_COOLDOWN = 5.0   # LLM 调用最小间隔（秒）
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Action Queue
+# 日志
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ActionQueue:
-    """动作队列：AI 一次给多个指令，逐条执行"""
-    
-    def __init__(self):
-        self.queue = []
-        self.executed = 0
-        self.need_ask_ai = True  # 启动时需要问 AI 要第一批指令
-        self._recent_keys = []  # 最近执行过的指令标识（去重用）
-    
-    def add_batch(self, instructions: list):
-        """AI 一次给多个指令"""
-        # 去重：过滤掉最近执行过的同类指令
-        filtered = []
-        for inst in instructions:
-            # 生成指令的唯一标识（类型+目标）
-            action = inst.get("Action")
-            if action == "say":
-                # say 指令：只保留一条，不重复
-                if any(i.get("Action") == "say" for i in filtered):
-                    continue
-            elif action == "walkTo":
-                # walkTo：相同目标不重复
-                key = f"walkTo_{inst.get('X')}_{inst.get('Y')}"
-                if key in self._recent_keys:
-                    continue
-                self._recent_keys.append(key)
-            elif action == "emote":
-                # emote：相同表情不重复
-                key = f"emote_{inst.get('Text')}"
-                if key in self._recent_keys:
-                    continue
-                self._recent_keys.append(key)
-            
-            filtered.append(inst)
-            
-            # 只保留最近 20 个 key
-            if len(self._recent_keys) > 20:
-                self._recent_keys.pop(0)
-        
-        self.queue = filtered
-        self.executed = 0
-        self.need_ask_ai = False
-    
-    def next(self) -> dict | None:
-        """取下一条指令"""
-        if not self.queue:
-            return None
-        
-        instruction = self.queue.pop(0)
-        self.executed += 1
-        
-        # 执行完 80% 后，标记需要问 AI
-        total = self.executed + len(self.queue)
-        if self.executed >= total * QUEUE_THRESHOLD:
-            self.need_ask_ai = True
-        
-        return instruction
-    
-    @property
-    def is_empty(self) -> bool:
-        return len(self.queue) == 0
-    
-    @property
-    def should_ask_ai(self) -> bool:
-        """是否需要问 AI 要新指令"""
-        return self.is_empty or self.need_ask_ai
-    
-    def clear(self):
-        """清空队列（中断时用）"""
-        self.queue.clear()
-        self.executed = 0
-        self.need_ask_ai = True
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 中断逻辑
-# ══════════════════════════════════════════════════════════════════════════════
-
-INTERRUPT_KEYWORDS = ["停", "stop", "等一下", "别动", "过来", "帮我", "等等"]
-CHAT_KEYWORDS = ["哈哈", "嗯", "好的", "知道", "谢谢", "晚安", "早安", "哦", "嗯嗯"]
-
-
-def is_dangerous(state: dict) -> bool:
-    """判断是否处于危险/紧急状态"""
-    
-    # 矿洞打怪
-    if state.get("LocationName") == "Mine" and state.get("MonsterCount", 0) > 0:
-        return True
-    
-    # 深夜（23:30 后）
-    if state.get("TimeOfDay", 0) >= 2330:
-        return True
-    
-    # 体力极低
-    if state.get("Energy", 100) < 15:
-        return True
-    
-    # 生命值低
-    if state.get("Health", 100) < 30:
-        return True
-    
-    return False
-
-
-def should_interrupt(state: dict, player_message: str) -> tuple:
-    """
-    判断是否打断当前动作
-    
-    返回: (should_interrupt: bool, reason: str)
-    - (True, "command") → 打断，执行新命令
-    - (False, "chat") → 不打断，继续当前动作
-    - (False, "dangerous") → 不打断，危险情况
-    - (None, "ask_llm") → 不确定，问 LLM
-    """
-    
-    # 1. 危险情况 → 不打断
-    if is_dangerous(state):
-        return False, "dangerous"
-    
-    # 2. 明确的打断指令
-    if any(kw in player_message for kw in INTERRUPT_KEYWORDS):
-        return True, "command"
-    
-    # 3. 明确的聊天
-    if any(kw in player_message for kw in CHAT_KEYWORDS):
-        return False, "chat"
-    
-    # 4. 不确定 → 问 LLM
-    return None, "ask_llm"
+def log(msg: str, level: str = "INFO"):
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] [{level}] {msg}", flush=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -223,132 +89,100 @@ def write_instruction(instruction: dict) -> bool:
         return False
 
 
-def write_reply(text: str) -> bool:
-    """写入回复（显示在主机聊天框）"""
-    try:
-        payload = {
-            "text": text,
-            "timestamp": int(time.time())
-        }
-        with open(REPLY_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        return True
-    except IOError as e:
-        log(f"写入回复失败: {e}", "ERROR")
-        return False
-
-
 def instruction_exists() -> bool:
     """检查是否有未执行的指令"""
     return os.path.exists(INSTRUCTION_FILE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 日志
+# 状态变化检测
 # ══════════════════════════════════════════════════════════════════════════════
 
-def log(msg: str, level: str = "INFO"):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[{ts}] [{level}] {msg}", flush=True)
+def state_changed(old: dict | None, new: dict | None) -> bool:
+    """检测状态是否有意义变化"""
+    if old is None or new is None:
+        return True
+    keys = ["PlayerX", "PlayerY", "TimeOfDay", "LocationName", "Energy", "Health"]
+    for k in keys:
+        if old.get(k) != new.get(k):
+            return True
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LLM 接口（占位，后续接入 OpenClaw）
+# LLM 接口（调用 OpenClaw 或其他 API）
 # ══════════════════════════════════════════════════════════════════════════════
 
-def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> list:
+def ask_llm(state: dict, player_message: str = "") -> list:
     """
-    问 LLM 要一批指令
+    问 LLM 该做什么。
     
-    流程：
-    1. behaviors.py 返回行为意图（包含 goal）
-    2. 把意图发给 LLM
-    3. LLM 决定具体说什么
-    4. 返回指令列表（say + goal）
+    输入：游戏状态 + 玩家消息
+    输出：指令列表 [{"Action": "say", "Text": "..."}, {"Action": "walkTo", "X": 48, "Y": 7}, ...]
+    
+    TODO: 接入真正的 LLM API
     """
-    log("问 LLM 要指令")
+    # 构建 prompt
+    prompt = build_prompt(state, player_message)
     
-    from behaviors import decide
+    # TODO: 调用 LLM API
+    # response = call_llm_api(prompt)
+    # instructions = parse_llm_response(response)
+    # return instructions
     
-    # 1. 获取行为意图
-    intent = decide(state, persona, player_message)
-    log(f"[意图] {intent['type']}: {intent['context']}")
-    
-    # 2. 构建 LLM prompt
-    prompt = f"""你是星露谷的AI伙伴，正在和主人一起玩游戏。
+    # 临时：返回空列表（等 LLM 接入）
+    log("等待 LLM 接入...", "DEBUG")
+    return []
 
-当前情况：
-- {intent['context']}
-- 位置：{state.get('LocationName', '未知')}
-- 时间：{state.get('TimeString', '未知')}
+
+def build_prompt(state: dict, player_message: str = "") -> str:
+    """构建 LLM prompt"""
+    
+    # 读取人设
+    persona_file = os.path.join(AI_DIR, "persona.json")
+    persona = {}
+    if os.path.exists(persona_file):
+        try:
+            with open(persona_file, "r", encoding="utf-8") as f:
+                persona = json.load(f)
+        except:
+            pass
+    
+    prompt = f"""你是一个星露谷物语的 AI 玩伴，正在和主人一起玩游戏。
+
+## 你的身份
+- 名字：{persona.get('name', '小助手')}
+- 性格：{persona.get('personality', '友善、活泼')}
+- 角色：{persona.get('role', '农场助手')}
+
+## 当前游戏状态
+- 时间：{state.get('TimeString', '?')}
+- 季节：{state.get('Season', '?')} 第{state.get('Day', '?')}天
+- 天气：{state.get('Weather', '?')}
+- 位置：{state.get('LocationName', '?')}
+- 坐标：({state.get('PlayerX', 0):.0f}, {state.get('PlayerY', 0):.0f})
 - 体力：{state.get('Energy', 0)}/{state.get('MaxEnergy', 270)}
-
-行为意图：{intent['intent']}
-建议：{intent['suggestion']}
-
-请用简短自然的话回复主人（1-2句话），然后执行建议的动作。
-只返回JSON格式：{{"say": "你说的话"}}
+- 生命：{state.get('Health', 0)}/{state.get('MaxHealth', 100)}
+- 金币：{state.get('Gold', 0)}
+- 背包：{state.get('InventorySummary', '?')}
 """
     
-    # 3. TODO: 调用 LLM API
-    # response = call_llm(prompt)
-    # return parse_llm_response(response)
+    if player_message:
+        prompt += f"\n## 主人刚刚说\n\"{player_message}\"\n"
     
-    # 4. 临时：用意图的建议作为回复
-    batch = []
-    
-    # 根据意图生成简单的回复
-    if intent['type'] == 'morning_greeting':
-        batch.append({"Action": "say", "Text": f"早安！{intent['context']}~"})
-    elif intent['type'] == 'weather_check':
-        batch.append({"Action": "say", "Text": f"{intent['context']}~"})
-    elif intent['type'] == 'rest':
-        batch.append({"Action": "say", "Text": f"{intent['context']}，休息一下~"})
-    elif intent['type'] == 'go_sleep':
-        batch.append({"Action": "say", "Text": f"{intent['context']}，晚安~"})
-    elif intent['type'] == 'ask_task':
-        batch.append({"Action": "say", "Text": f"主人，今天有什么要我做的吗？"})
-    elif intent['type'] == 'decline':
-        batch.append({"Action": "say", "Text": f"好的，那我自己安排啦~"})
-    elif intent['type'] == 'question':
-        batch.append({"Action": "say", "Text": f"让我查一下~"})
-    elif intent['type'] == 'comfort':
-        batch.append({"Action": "say", "Text": f"主人注意休息哦~"})
-    elif intent['type'] == 'festival_reminder':
-        batch.append({"Action": "say", "Text": f"今天是{intent['context']}！"})
-    elif intent['type'] == 'birthday_reminder':
-        batch.append({"Action": "say", "Text": f"{intent['context']}！"})
-    else:
-        batch.append({"Action": "say", "Text": f"{intent['suggestion']}~"})
-    
-    # 5. 添加目标（如果有的话）
-    if intent.get('goal'):
-        batch.append({"Action": "goal", "Text": intent['goal']})
-    
-    return batch[:10]
-    
-    return batch
+    prompt += """
+## 输出格式
+返回 JSON 数组，每个元素是一条指令。可选指令：
+- {"Action": "say", "Text": "说话内容"} — 在聊天框说话
+- {"Action": "walkTo", "X": 数字, "Y": 数字} — 走到指定位置
+- {"Action": "goal", "Text": "目标名"} — 执行高层目标（go_outside/go_home/go_to_crops/wander/rest）
+- {"Action": "wait", "DurationMs": 数字} — 等待
+- {"Action": "emote", "Text": "表情名"} — 显示表情（happy/sad/angry/love/note）
 
-
-def ask_llm_for_interrupt(state: dict, player_message: str) -> str:
-    """
-    问 LLM 判断是聊天还是命令
+只返回 JSON 数组，不要其他文字。
+"""
     
-    返回: "chat" 或 "command"
-    
-    TODO: 接入 OpenClaw API
-    """
-    log(f"问 LLM 判断: '{player_message}'（当前用关键词代替）")
-    
-    # 简单判断：有问号或命令词 → command
-    if "?" in player_message or "？" in player_message:
-        return "command"
-    
-    command_words = ["去", "来", "做", "干", "帮我", "给我", "找", "买", "卖"]
-    if any(w in player_message for w in command_words):
-        return "command"
-    
-    return "chat"
+    return prompt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -356,14 +190,15 @@ def ask_llm_for_interrupt(state: dict, player_message: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    log("=== AI Companion Bridge v2.0 ===")
+    log("=== AI Companion Bridge v5.0 ===")
     log(f"监控目录: {AI_DIR}")
+    log("架构: 纯执行器，等 LLM 命令")
     log("按 Ctrl+C 停止")
     print()
     
-    queue = ActionQueue()
     last_state = None
     last_chat_ts = 0
+    last_llm_time = 0
     
     while True:
         try:
@@ -373,70 +208,55 @@ def main():
                 time.sleep(POLL_INTERVAL)
                 continue
             
-            # ── 2. 检查玩家消息 ─────────────────────────────────────────
+            # ── 2. 检查状态变化 ─────────────────────────────────────────
+            has_state_changed = state_changed(last_state, state)
+            
+            # ── 3. 检查玩家消息 ─────────────────────────────────────────
             chat = read_chat()
+            player_message = ""
             if chat:
                 player_msg = chat.get("Message", "")
                 chat_ts = chat.get("Timestamp", 0)
                 
                 if chat_ts > last_chat_ts:
                     last_chat_ts = chat_ts
+                    player_message = player_msg
                     log(f"[玩家] {player_msg}")
-                    
-                    # 判断是否打断
-                    interrupt, reason = should_interrupt(state, player_msg)
-                    
-                    if interrupt is True:
-                        # 明确打断
-                        log(f"[中断] 打断当前动作，原因: {reason}")
-                        queue.clear()
-                        
-                        # 问 LLM 要新指令
-                        batch = ask_llm_for_action(state, {}, player_msg)
-                        if batch:
-                            queue.add_batch(batch)
-                            log(f"[LLM] 收到 {len(batch)} 条指令")
-                    
-                    elif interrupt is False:
-                        # 不打断
-                        if reason == "dangerous":
-                            log(f"[继续] 危险情况，不打断")
-                            write_reply("等我忙完~")
-                        else:
-                            log(f"[继续] 聊天，不打断")
-                    
-                    else:
-                        # 不确定 → 问 LLM
-                        result = ask_llm_for_interrupt(state, player_msg)
-                        
-                        if result == "command":
-                            log(f"[LLM] 判断为命令，打断")
-                            queue.clear()
-                            batch = ask_llm_for_action(state, {}, player_msg)
-                            if batch:
-                                queue.add_batch(batch)
-                        else:
-                            log(f"[LLM] 判断为聊天，继续")
             
-            # ── 3. 执行队列指令 ─────────────────────────────────────────
-            if not instruction_exists() and not queue.is_empty:
-                instruction = queue.next()
-                if instruction:
-                    write_instruction(instruction)
-                    log(f"[执行] {instruction.get('Action')} {instruction.get('Text', '')} {instruction.get('X', '')} {instruction.get('Y', '')}")
+            # ── 4. 决定是否问 LLM ──────────────────────────────────────
+            should_ask_llm = False
+            
+            # 有玩家消息 → 问 LLM
+            if player_message:
+                should_ask_llm = True
+                log("[触发] 玩家消息")
+            
+            # 状态变化 + 没有正在执行的指令 + 冷却时间过了 → 问 LLM
+            elif has_state_changed and not instruction_exists():
+                now = time.time()
+                if now - last_llm_time >= LLM_COOLDOWN:
+                    should_ask_llm = True
+                    log("[触发] 状态变化")
+            
+            # ── 5. 问 LLM ──────────────────────────────────────────────
+            if should_ask_llm:
+                log("[LLM] 询问中...")
+                instructions = ask_llm(state, player_message)
+                
+                if instructions:
+                    log(f"[LLM] 收到 {len(instructions)} 条指令")
                     
-                    # 随机延迟 3-5 秒（不像机器人）
-                    delay = random.uniform(INSTRUCTION_DELAY_MIN, INSTRUCTION_DELAY_MAX)
-                    time.sleep(delay)
+                    # 执行第一条指令
+                    first = instructions[0]
+                    if write_instruction(first):
+                        log(f"[执行] {first.get('Action')} {first.get('Text', '')} {first.get('X', '')} {first.get('Y', '')}")
+                        last_llm_time = time.time()
+                    
+                    # TODO: 如果有多条指令，放入队列逐条执行
+                else:
+                    log("[LLM] 无指令（等待中）")
             
-            # ── 4. 队列空了 → 问 AI 要新指令 ──────────────────────────
-            if queue.should_ask_ai and not instruction_exists():
-                batch = ask_llm_for_action(state, {})
-                if batch:
-                    queue.add_batch(batch)
-                    log(f"[LLM] 收到 {len(batch)} 条指令")
-            
-            # ── 5. 更新状态 ─────────────────────────────────────────────
+            # ── 6. 更新状态 ─────────────────────────────────────────────
             last_state = state
             
             time.sleep(POLL_INTERVAL)
