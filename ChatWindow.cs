@@ -9,17 +9,23 @@ using StardewValley;
 namespace AICompanion
 {
     /// <summary>
-    /// AI 聊天窗口 - 替换游戏原生聊天框
-    /// T 键呼出，直接对接大模型
+    /// AI 聊天窗口
+    /// - T 键呼出输入框（屏幕底部）
+    /// - AI 回复显示在屏幕上方（字幕样式，蓝色字，无背景）
     /// </summary>
     public class ChatWindow
     {
         private readonly IMonitor _monitor;
         private readonly IModHelper _helper;
         
-        // 消息历史
+        // 消息历史（输入框用）
         private readonly List<ChatMessage> _messages = new();
         private const int MAX_MESSAGES = 50;
+        
+        // 字幕显示（屏幕上方）
+        private string _currentSubtitle = "";
+        private DateTime _subtitleTime;
+        private const int SUBTITLE_DURATION_MS = 5000;  // 字幕显示 5 秒
         
         // 输入状态
         private string _inputText = "";
@@ -27,18 +33,12 @@ namespace AICompanion
         
         // 键盘状态
         private KeyboardState _currentKeyState;
-        private KeyboardState _lastKeyState;
         private HashSet<Keys> _pressedKeys = new();
         
         // UI 配置
-        private const int CHAT_WIDTH = 600;
-        private const int CHAT_HEIGHT = 200;
+        private const int INPUT_WIDTH = 600;
         private const int INPUT_HEIGHT = 30;
         private const int MARGIN = 10;
-        
-        // 位置
-        private Rectangle _windowRect;
-        private Rectangle _inputRect;
         
         // 状态
         public bool IsOpen => _isOpen;
@@ -60,7 +60,7 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 打开聊天窗口
+        /// 打开输入框
         /// </summary>
         public void Open()
         {
@@ -70,7 +70,7 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 关闭聊天窗口
+        /// 关闭输入框
         /// </summary>
         public void Close()
         {
@@ -80,7 +80,17 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 添加消息
+        /// 显示字幕（屏幕上方，蓝色字，无背景）
+        /// </summary>
+        public void ShowSubtitle(string text)
+        {
+            _currentSubtitle = text;
+            _subtitleTime = DateTime.Now;
+            _monitor.Log($"[ChatWindow] 字幕: {text}", LogLevel.Info);
+        }
+        
+        /// <summary>
+        /// 添加消息到历史
         /// </summary>
         public void AddMessage(string sender, string text, Color color)
         {
@@ -94,8 +104,6 @@ namespace AICompanion
             
             if (_messages.Count > MAX_MESSAGES)
                 _messages.RemoveAt(0);
-            
-            _monitor.Log($"[ChatWindow] {sender}: {text}", LogLevel.Info);
         }
         
         /// <summary>
@@ -105,22 +113,17 @@ namespace AICompanion
         {
             if (!_isOpen) return;
             
-            // 获取键盘状态
             _currentKeyState = Keyboard.GetState();
-            
-            // 检测新按下的键
             var pressedKeys = _currentKeyState.GetPressedKeys();
+            
             foreach (var key in pressedKeys)
             {
                 if (!_pressedKeys.Contains(key))
                 {
-                    // 新按下的键
                     ProcessKeyPress(key);
                 }
             }
             _pressedKeys = new HashSet<Keys>(pressedKeys);
-            
-            _lastKeyState = _currentKeyState;
         }
         
         /// <summary>
@@ -165,7 +168,6 @@ namespace AICompanion
             // 字母键 (A-Z)
             if (key >= Keys.A && key <= Keys.Z)
             {
-                // 检查是否按下了 Shift
                 bool shift = _currentKeyState.IsKeyDown(Keys.LeftShift) || _currentKeyState.IsKeyDown(Keys.RightShift);
                 char c = shift ? (char)('A' + (key - Keys.A)) : (char)('a' + (key - Keys.A));
                 _inputText += c;
@@ -185,13 +187,13 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 处理按键事件 - 拦截 T 键和其他按键
+        /// 处理按键事件 - 拦截 T 键
         /// </summary>
         private void OnButtonPressed(object sender, StardewModdingAPI.Events.ButtonPressedEventArgs e)
         {
             if (!Context.IsWorldReady) return;
             
-            // T 键打开/关闭聊天窗口
+            // T 键打开/关闭
             if (e.Button == SButton.T)
             {
                 if (_isOpen)
@@ -203,7 +205,7 @@ namespace AICompanion
                 return;
             }
             
-            // 聊天窗口打开时，阻止所有按键传递给游戏
+            // 输入框打开时，阻止所有按键传递给游戏
             if (_isOpen)
             {
                 _helper.Input.Suppress(e.Button);
@@ -211,57 +213,24 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 渲染窗口
+        /// 渲染
         /// </summary>
         private void OnRendered(object sender, StardewModdingAPI.Events.RenderedEventArgs e)
         {
-            if (!_isOpen || !Context.IsWorldReady) return;
+            if (!Context.IsWorldReady) return;
             
             try
             {
                 var spriteBatch = e.SpriteBatch;
                 
-                // 更新位置（屏幕底部）
-                _windowRect = new Rectangle(
-                    Game1.viewport.Width / 2 - CHAT_WIDTH / 2,
-                    Game1.viewport.Height - CHAT_HEIGHT - INPUT_HEIGHT - MARGIN,
-                    CHAT_WIDTH,
-                    CHAT_HEIGHT + INPUT_HEIGHT
-                );
+                // 1. 渲染字幕（屏幕上方，蓝色字，无背景）
+                RenderSubtitle(spriteBatch);
                 
-                _inputRect = new Rectangle(
-                    _windowRect.X + MARGIN,
-                    _windowRect.Y + CHAT_HEIGHT + MARGIN / 2,
-                    _windowRect.Width - MARGIN * 2,
-                    INPUT_HEIGHT - MARGIN
-                );
-                
-                // 绘制背景（半透明黑色）
-                spriteBatch.Draw(Game1.staminaRect, _windowRect, new Color(0, 0, 0, 200));
-                
-                // 绘制边框
-                DrawBorder(spriteBatch, _windowRect, Color.White);
-                
-                // 绘制消息列表
-                int messageY = _windowRect.Y + MARGIN;
-                int maxMessages = (CHAT_HEIGHT - MARGIN * 2) / 18;
-                int startIndex = Math.Max(0, _messages.Count - maxMessages);
-                
-                for (int i = startIndex; i < _messages.Count; i++)
+                // 2. 渲染输入框（屏幕底部，仅在打开时）
+                if (_isOpen)
                 {
-                    var msg = _messages[i];
-                    string displayText = $"{msg.Sender}: {msg.Text}";
-                    
-                    if (displayText.Length > 50)
-                        displayText = displayText.Substring(0, 47) + "...";
-                    
-                    Vector2 textPos = new Vector2(_windowRect.X + MARGIN, messageY);
-                    spriteBatch.DrawString(Game1.smallFont, displayText, textPos, msg.Color);
-                    messageY += 18;
+                    RenderInputBox(spriteBatch);
                 }
-                
-                // 绘制输入框
-                DrawInputBox(spriteBatch);
             }
             catch (Exception ex)
             {
@@ -270,28 +239,113 @@ namespace AICompanion
         }
         
         /// <summary>
-        /// 绘制输入框
+        /// 渲染字幕（工具栏上方，蓝色字，无背景）
         /// </summary>
-        private void DrawInputBox(SpriteBatch spriteBatch)
+        private void RenderSubtitle(SpriteBatch spriteBatch)
         {
-            // 输入框背景
-            spriteBatch.Draw(Game1.staminaRect, _inputRect, new Color(50, 50, 50, 220));
+            if (string.IsNullOrEmpty(_currentSubtitle)) return;
             
-            // 输入框边框
-            DrawBorder(spriteBatch, _inputRect, Color.Yellow);
+            // 检查是否过期
+            if ((DateTime.Now - _subtitleTime).TotalMilliseconds > SUBTITLE_DURATION_MS)
+            {
+                _currentSubtitle = "";
+                return;
+            }
+            
+            // 使用游戏小字体（和工具栏文字一样大）
+            var font = Game1.smallFont;
+            
+            // 获取游戏 UI 缩放比例
+            float uiScale = Game1.options.uiScale / 100f;
+            
+            // 最大宽度：屏幕宽度的 60%
+            int maxWidth = (int)(Game1.viewport.Width * 0.6f);
+            
+            // 换行处理
+            var lines = WrapText(font, _currentSubtitle, maxWidth, uiScale);
+            
+            // 工具栏在屏幕底部，高度约 60 像素（按缩放）
+            float toolbarHeight = 60 * uiScale;
+            float lineHeight = font.LineSpacing * uiScale * 1.3f;
+            float totalHeight = lines.Count * lineHeight;
+            
+            // 字幕位置：工具栏上方
+            float startY = Game1.viewport.Height - toolbarHeight - totalHeight - 20 * uiScale;
+            float startX = (Game1.viewport.Width - maxWidth) / 2;  // 水平居中
+            
+            // 绘制每一行
+            for (int i = 0; i < lines.Count; i++)
+            {
+                Vector2 position = new Vector2(startX, startY + i * lineHeight);
+                // 绘制阴影（黑色）
+                spriteBatch.DrawString(font, lines[i], position + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, uiScale, SpriteEffects.None, 0f);
+                // 绘制文字（蓝色）
+                spriteBatch.DrawString(font, lines[i], position, Color.Cyan, 0f, Vector2.Zero, uiScale, SpriteEffects.None, 0f);
+            }
+        }
+        
+        /// <summary>
+        /// 文字换行
+        /// </summary>
+        private List<string> WrapText(SpriteFont font, string text, int maxWidth, float scale)
+        {
+            var lines = new List<string>();
+            var words = text.Split(' ');
+            var currentLine = "";
+            
+            foreach (var word in words)
+            {
+                var testLine = string.IsNullOrEmpty(currentLine) ? word : currentLine + " " + word;
+                var size = font.MeasureString(testLine) * scale;
+                
+                if (size.X > maxWidth && !string.IsNullOrEmpty(currentLine))
+                {
+                    lines.Add(currentLine);
+                    currentLine = word;
+                }
+                else
+                {
+                    currentLine = testLine;
+                }
+            }
+            
+            if (!string.IsNullOrEmpty(currentLine))
+                lines.Add(currentLine);
+            
+            return lines;
+        }
+        
+        /// <summary>
+        /// 渲染输入框（屏幕底部居中）
+        /// </summary>
+        private void RenderInputBox(SpriteBatch spriteBatch)
+        {
+            // 输入框位置
+            Rectangle inputRect = new Rectangle(
+                (Game1.viewport.Width - INPUT_WIDTH) / 2,
+                Game1.viewport.Height - INPUT_HEIGHT - MARGIN,
+                INPUT_WIDTH,
+                INPUT_HEIGHT
+            );
+            
+            // 背景（半透明黑色）
+            spriteBatch.Draw(Game1.staminaRect, inputRect, new Color(0, 0, 0, 180));
+            
+            // 边框（黄色）
+            DrawBorder(spriteBatch, inputRect, Color.Yellow);
             
             // 输入文本
             string displayText = _inputText;
             if (DateTime.Now.Millisecond % 1000 < 500)
                 displayText += "|";
             
-            Vector2 textPos = new Vector2(_inputRect.X + 5, _inputRect.Y + 7);
+            Vector2 textPos = new Vector2(inputRect.X + 5, inputRect.Y + 7);
             spriteBatch.DrawString(Game1.smallFont, displayText, textPos, Color.White);
             
             // 提示文字
             if (string.IsNullOrEmpty(_inputText))
             {
-                Vector2 hintPos = new Vector2(_inputRect.X + 5, _inputRect.Y + 7);
+                Vector2 hintPos = new Vector2(inputRect.X + 5, inputRect.Y + 7);
                 spriteBatch.DrawString(Game1.smallFont, "输入消息...", hintPos, Color.Gray);
             }
         }

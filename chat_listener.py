@@ -1,6 +1,6 @@
 """
-AI Companion - 聊天监听器
-只监听消息并打印，AI 在 OpenClaw 里决策后直接写 instruction.json
+AI Companion - 聊天监听器 v2
+监听玩家消息 → 打印到控制台 → AI 写 reply.json → 主机字幕显示
 """
 
 import json
@@ -15,6 +15,7 @@ else:
     AI_DIR = r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\ai"
 
 CHAT_FILE = os.path.join(AI_DIR, "chat.json")
+REPLY_FILE = os.path.join(AI_DIR, "reply.json")
 STATE_FILE = os.path.join(AI_DIR, "state.json")
 
 POLL_INTERVAL = 0.5
@@ -38,21 +39,26 @@ def read_chat():
         return None
 
 
-def read_state():
-    """读取游戏状态"""
+def write_reply(text):
+    """写入回复（主机 Mod 会读取并显示字幕）"""
     try:
-        if not os.path.exists(STATE_FILE):
-            return None
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None
+        payload = {
+            "text": text,
+            "timestamp": int(time.time())
+        }
+        with open(REPLY_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        log(f"[回复] 写入 reply.json: {text}")
+        return True
+    except Exception as e:
+        log(f"[回复] 写入失败: {e}", "ERROR")
+        return False
 
 
 def main():
-    log("=== 聊天监听器 ===")
+    log("=== AI Companion 聊天监听器 v2 ===")
     log(f"监控目录: {AI_DIR}")
-    log("等待玩家消息，AI 在 OpenClaw 中决策...")
+    log("流程: 玩家说话 → 打印到控制台 → AI 写 reply.json → 主机字幕显示")
     log("按 Ctrl+C 停止")
     print()
 
@@ -60,15 +66,6 @@ def main():
 
     while True:
         try:
-            # 读取游戏状态
-            state = read_state()
-            if state:
-                # 每 30 秒打印一次状态
-                if int(time.time()) % 30 == 0:
-                    log(f"[状态] {state.get('PlayerName')} @ {state.get('LocationName')} "
-                        f"({state.get('PlayerX', 0):.0f},{state.get('PlayerY', 0):.0f}) "
-                        f"时间:{state.get('TimeString')} 体力:{state.get('Energy')}")
-
             # 检查聊天消息
             chat = read_chat()
             if chat:
@@ -84,9 +81,6 @@ def main():
                 # 处理新消息
                 last_processed_ts = timestamp
                 log(f"[消息] {sender}: {message}")
-                log(f"[上下文] 位置:{state.get('LocationName') if state else '未知'} "
-                    f"时间:{state.get('TimeString') if state else '未知'} "
-                    f"体力:{state.get('Energy') if state else '未知'}")
 
             time.sleep(POLL_INTERVAL)
 
