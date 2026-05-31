@@ -16,6 +16,7 @@ import json
 import time
 import os
 import sys
+import random
 from pathlib import Path
 from datetime import datetime
 
@@ -35,6 +36,8 @@ REPLY_FILE = os.path.join(AI_DIR, "reply.json")
 
 POLL_INTERVAL = 0.5
 QUEUE_THRESHOLD = 0.8  # 执行完 80% 后问 AI 要新指令
+INSTRUCTION_DELAY_MIN = 3.0  # 指令间最小延迟（秒）
+INSTRUCTION_DELAY_MAX = 5.0  # 指令间最大延迟（秒）
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -240,24 +243,26 @@ def log(msg: str, level: str = "INFO"):
 
 def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> list:
     """
-    问 LLM 要一批指令
+    问 LLM 要一批指令（10 条）
     
     返回: [{"Action": "say", "Text": "..."}, {"Action": "walkTo", "X": 48, "Y": 7}, ...]
     
     TODO: 接入 OpenClaw API
     """
-    # 暂时返回简单测试指令
     log("问 LLM 要指令（当前用简单逻辑代替）")
     
     from behaviors import decide
-    say, action = decide(state, persona, player_message)
     
-    # 包装成批次
+    # 一次生成 10 条指令
     batch = []
-    if say:
-        batch.append(say)
-    if action:
-        batch.append(action)
+    for _ in range(5):  # 5 轮，每轮 say + action = 10 条
+        say, action = decide(state, persona, player_message)
+        if say:
+            batch.append(say)
+        if action:
+            batch.append(action)
+    
+    return batch[:10]  # 最多 10 条
     
     return batch
 
@@ -356,6 +361,10 @@ def main():
                 if instruction:
                     write_instruction(instruction)
                     log(f"[执行] {instruction.get('Action')} {instruction.get('Text', '')} {instruction.get('X', '')} {instruction.get('Y', '')}")
+                    
+                    # 随机延迟 3-5 秒（不像机器人）
+                    delay = random.uniform(INSTRUCTION_DELAY_MIN, INSTRUCTION_DELAY_MAX)
+                    time.sleep(delay)
             
             # ── 4. 队列空了 → 问 AI 要新指令 ──────────────────────────
             if queue.should_ask_ai and not instruction_exists():
