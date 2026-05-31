@@ -153,10 +153,15 @@ namespace AICompanion
 
             configMenu.AddTextOption(
                 mod: ModManifest,
-                getValue: () => Config.BaseURL,
-                setValue: value => Config.BaseURL = value,
+                getValue: () =>
+                {
+                    if (ModConfig.LLMPresets.TryGetValue(Config.LLMProvider, out var preset))
+                        return preset.BaseURL;
+                    return Config.BaseURL;
+                },
+                setValue: value => { /* 自动根据提供商填充 */ },
                 name: () => "Base URL",
-                tooltip: () => "API 基础地址（通常自动填充）"
+                tooltip: () => "API 基础地址（自动根据提供商填充，建议不要修改）"
             );
 
             // ── 功能开关 ──────────────────────────────────────────────
