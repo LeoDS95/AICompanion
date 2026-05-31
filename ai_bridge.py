@@ -51,22 +51,37 @@ class ActionQueue:
         self.queue = []
         self.executed = 0
         self.need_ask_ai = True  # 启动时需要问 AI 要第一批指令
-        self._recent_messages = []  # 最近发过的消息（去重用）
+        self._recent_keys = []  # 最近执行过的指令标识（去重用）
     
     def add_batch(self, instructions: list):
         """AI 一次给多个指令"""
-        # 去重：过滤掉最近发过的消息
+        # 去重：过滤掉最近执行过的同类指令
         filtered = []
         for inst in instructions:
-            if inst.get("Action") == "say":
-                text = inst.get("Text", "")
-                if text in self._recent_messages:
-                    continue  # 跳过重复消息
-                self._recent_messages.append(text)
-                # 只保留最近 10 条
-                if len(self._recent_messages) > 10:
-                    self._recent_messages.pop(0)
+            # 生成指令的唯一标识（类型+目标）
+            action = inst.get("Action")
+            if action == "say":
+                # say 指令：只保留一条，不重复
+                if any(i.get("Action") == "say" for i in filtered):
+                    continue
+            elif action == "walkTo":
+                # walkTo：相同目标不重复
+                key = f"walkTo_{inst.get('X')}_{inst.get('Y')}"
+                if key in self._recent_keys:
+                    continue
+                self._recent_keys.append(key)
+            elif action == "emote":
+                # emote：相同表情不重复
+                key = f"emote_{inst.get('Text')}"
+                if key in self._recent_keys:
+                    continue
+                self._recent_keys.append(key)
+            
             filtered.append(inst)
+            
+            # 只保留最近 20 个 key
+            if len(self._recent_keys) > 20:
+                self._recent_keys.pop(0)
         
         self.queue = filtered
         self.executed = 0

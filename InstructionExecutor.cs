@@ -356,8 +356,8 @@ namespace AICompanion
 
             var emoteMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
             {
-                ["happy"]    = 20, ["sad"]      = 24, ["angry"]    = 12,
-                ["love"]     = 0,  ["surprise"] = 40, ["sleep"]    = 5,
+                ["happy"]    = 4,  ["sad"]      = 24, ["angry"]    = 28,
+                ["love"]     = 20, ["surprise"] = 16, ["sleep"]    = 5,
                 ["note"]     = 12, ["question"] = 40, ["shock"]    = 16
             };
 
