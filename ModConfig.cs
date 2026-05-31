@@ -70,7 +70,7 @@ namespace AICompanion
             ["MiMo Plan"] = new LLMPreset
             {
                 Name = "MiMo (Token Plan)",
-                BaseURL = "https://api.xiaomimimo.com/v1",
+                BaseURL = "https://token-plan-cn.xiaomimimo.com/v1",
                 DefaultModel = "mimo-v2.5-pro",
                 Models = new[] { "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash" }
             },
