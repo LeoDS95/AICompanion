@@ -80,97 +80,97 @@ namespace AICompanion
 
             // 注册配置
             configMenu.Register(
-                modManifest: ModManifest,
+                mod: ModManifest,
                 reset: () => Config = new ModConfig(),
                 save: () => Helper.WriteConfig(Config)
             );
 
             // ── AI 人设 ──────────────────────────────────────────────
             configMenu.AddSectionTitle(
-                modManifest: ModManifest,
+                mod: ModManifest,
                 text: () => "AI 人设设置"
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "AI 名字",
-                tooltip: () => "给你的 AI 伙伴取个名字",
+                mod: ModManifest,
                 getValue: () => Config.AIName,
-                setValue: value => Config.AIName = value
+                setValue: value => Config.AIName = value,
+                name: () => "AI 名字",
+                tooltip: () => "给你的 AI 伙伴取个名字"
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "AI 性格",
-                tooltip: () => "选择 AI 的性格类型",
+                mod: ModManifest,
                 getValue: () => Config.AIPersonality,
                 setValue: value => Config.AIPersonality = value,
+                name: () => "AI 性格",
+                tooltip: () => "选择 AI 的性格类型",
                 allowedValues: new[] { "活泼可爱", "温柔体贴", "搞笑幽默", "认真勤恳" }
             );
 
             // ── LLM 配置 ──────────────────────────────────────────────
             configMenu.AddSectionTitle(
-                modManifest: ModManifest,
+                mod: ModManifest,
                 text: () => "LLM API 配置"
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "API 提供商",
-                tooltip: () => "选择 LLM 提供商，会自动填充 Base URL 和默认模型",
+                mod: ModManifest,
                 getValue: () => Config.LLMProvider,
                 setValue: value =>
                 {
                     Config.LLMProvider = value;
                     Config.ApplyPreset(value);
                 },
+                name: () => "API 提供商",
+                tooltip: () => "选择 LLM 提供商，会自动填充 Base URL 和默认模型",
                 allowedValues: new[] { "OpenAI", "Claude", "Gemini", "XAI", "DeepSeek", "MiMo", "自定义" }
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "API Key",
-                tooltip: () => "输入你的 API Key（不会显示在游戏内）",
+                mod: ModManifest,
                 getValue: () => Config.APIKey,
-                setValue: value => Config.APIKey = value
+                setValue: value => Config.APIKey = value,
+                name: () => "API Key",
+                tooltip: () => "输入你的 API Key"
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "模型",
-                tooltip: () => "选择使用的模型",
+                mod: ModManifest,
                 getValue: () => Config.Model,
-                setValue: value => Config.Model = value
+                setValue: value => Config.Model = value,
+                name: () => "模型",
+                tooltip: () => "选择使用的模型"
             );
 
             configMenu.AddTextOption(
-                modManifest: ModManifest,
-                name: () => "Base URL",
-                tooltip: () => "API 基础地址（通常自动填充）",
+                mod: ModManifest,
                 getValue: () => Config.BaseURL,
-                setValue: value => Config.BaseURL = value
+                setValue: value => Config.BaseURL = value,
+                name: () => "Base URL",
+                tooltip: () => "API 基础地址（通常自动填充）"
             );
 
             // ── 功能开关 ──────────────────────────────────────────────
             configMenu.AddSectionTitle(
-                modManifest: ModManifest,
+                mod: ModManifest,
                 text: () => "功能开关"
             );
 
             configMenu.AddBoolOption(
-                modManifest: ModManifest,
-                name: () => "自动启动 Python",
-                tooltip: () => "启动游戏时自动运行 Python 控制脚本",
+                mod: ModManifest,
                 getValue: () => Config.AutoStartPython,
-                setValue: value => Config.AutoStartPython = value
+                setValue: value => Config.AutoStartPython = value,
+                name: () => "自动启动 Python",
+                tooltip: () => "启动游戏时自动运行 Python 控制脚本"
             );
 
             configMenu.AddBoolOption(
-                modManifest: ModManifest,
-                name: () => "陪伴模式",
-                tooltip: () => "开启 AI 陪伴互动（主动打招呼、关心、闲聊）",
+                mod: ModManifest,
                 getValue: () => Config.EnableCompanionMode,
-                setValue: value => Config.EnableCompanionMode = value
+                setValue: value => Config.EnableCompanionMode = value,
+                name: () => "陪伴模式",
+                tooltip: () => "开启 AI 陪伴互动（主动打招呼、关心、闲聊）"
             );
 
             Monitor.Log("[GMCM] 设置页面注册成功", LogLevel.Info);
