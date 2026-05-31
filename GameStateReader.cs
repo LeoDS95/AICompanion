@@ -44,6 +44,11 @@ namespace AICompanion
         // 背包摘要（前8格）
         public string InventorySummary { get; set; }
 
+        // 多人联机
+        public bool IsMultiplayer { get; set; }
+        public bool IsMainPlayer { get; set; }
+        public int PlayerCount { get; set; }
+
         // 通信状态
         public bool WaitingForInstruction { get; set; }
         public bool IsWalking { get; set; }          // 是否正在寻路行走中
@@ -103,6 +108,11 @@ namespace AICompanion
                 snapshot.ItemCount = items?.Count ?? 0;
                 snapshot.InventorySummary = string.Join(", ",
                     items?.Take(8).Select(i => $"{i.Name}x{i.Stack}") ?? Enumerable.Empty<string>());
+
+                // === 多人联机 ===
+                snapshot.IsMultiplayer = Context.IsMultiplayer;
+                snapshot.IsMainPlayer = Context.IsMainPlayer;
+                snapshot.PlayerCount = Game1.otherFarmers?.Count + 1 ?? 1;
 
                 // 寻路状态
                 snapshot.IsWalking = player.controller != null;

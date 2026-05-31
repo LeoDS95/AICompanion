@@ -9,58 +9,94 @@ namespace AICompanion
     public class ModEntry : Mod
     {
         private int tickCount = 0;
-        private int waitTicksRemaining = 0;  // wait 指令的剩余 tick 数
-        private string lastInstructionHash = "";  // 去重：防止同一指令重复执行
+        private int waitTicksRemaining = 0;
+        private string lastInstructionHash = "";
+        private IModHelper _helper;
 
         public override void Entry(IModHelper helper)
         {
-            // 初始化通信路径（ai/ 目录在游戏根目录）
-            // helper.DirectoryPath = Mods/AICompanion/，需要上两级到游戏根目录
+            _helper = helper;
+
+            // 初始化通信路径
             var gameDir = Directory.GetParent(Directory.GetParent(helper.DirectoryPath).FullName).FullName;
             GameConfig.Init(gameDir);
 
-            Monitor.Log("=== AI Companion v0.2 ===", LogLevel.Info);
+            Monitor.Log("=== AI Companion v0.5 ===", LogLevel.Info);
             Monitor.Log($"通信目录: {GameConfig.AIDir}", LogLevel.Info);
-            Monitor.Log($"状态文件: {GameConfig.StateFile}", LogLevel.Info);
-            Monitor.Log($"指令文件: {GameConfig.InstructionFile}", LogLevel.Info);
 
-            // 清理旧的指令文件
+            // 等待游戏加载后再判断模式
+            helper.Events.GameLoop.GameLaunched += OnGameLaunched;
+        }
+
+        private void OnGameLaunched(object sender, GameLaunchedEventArgs e)
+        {
+            // 延迟检查，等待联机建立
+            _helper.Events.GameLoop.UpdateTicked += OnInitialCheck;
+        }
+
+        private int _initCheckTicks = 0;
+
+        private void OnInitialCheck(object sender, UpdateTickedEventArgs e)
+        {
+            _initCheckTicks++;
+            if (_initCheckTicks < 60) return;  // 等待约1秒
+
+            _helper.Events.GameLoop.UpdateTicked -= OnInitialCheck;
+
+            // 清理旧指令
             if (File.Exists(GameConfig.InstructionFile))
                 File.Delete(GameConfig.InstructionFile);
 
-            // 事件绑定
-            helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
-            helper.Events.Player.Warped += OnPlayerWarped;
-            helper.Events.GameLoop.TimeChanged += OnTimeChanged;
-            helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
+            if (Context.IsMultiplayer && !Context.IsMainPlayer)
+            {
+                // === AI 模式：加入者 ===
+                Monitor.Log("[模式] AI 实例 - 加入者模式", LogLevel.Info);
+                Monitor.Log("[AI] 等待游戏加载完成后自动开始控制", LogLevel.Info);
+
+                _helper.Events.GameLoop.UpdateTicked += OnAITick;
+                _helper.Events.Player.Warped += OnPlayerWarped;
+                _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
+            }
+            else
+            {
+                // === 主机模式：主人手动控制 ===
+                Monitor.Log("[模式] 主机/单人模式 - 主人手动控制", LogLevel.Info);
+                Monitor.Log("[主机] Mod 不干预，主人自由游戏", LogLevel.Info);
+
+                // 主机也写状态（供 Python 监控用）
+                _helper.Events.GameLoop.UpdateTicked += OnHostTick;
+                _helper.Events.Player.Warped += OnPlayerWarped;
+                _helper.Events.GameLoop.TimeChanged += OnTimeChanged;
+                _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
+            }
         }
 
-        private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
+        // ==================== AI 模式 ====================
+        // 读取状态 + 执行指令
+
+        private void OnAITick(object sender, UpdateTickedEventArgs e)
         {
             if (!Context.IsWorldReady) return;
-            if (!e.IsMultipleOf(30)) return;  // 每 30 tick ≈ 0.5 秒
+            if (!e.IsMultipleOf(30)) return;  // 每 0.5 秒
 
             tickCount++;
 
-            // === 1. 处理 wait 指令 ===
+            // 处理 wait 指令
             if (waitTicksRemaining > 0)
             {
                 waitTicksRemaining--;
-                return;  // 等待期间不处理新指令
+                return;
             }
 
-            // === 2. 读取并执行指令 ===
+            // === 1. 读取并执行指令 ===
             var instruction = InstructionExecutor.ReadInstruction(Monitor);
             if (instruction != null)
             {
-                // 去重：同样的指令不重复执行（walkTo 除外，允许重试）
+                // 去重
                 if (instruction.Action?.ToLower() != "walkto")
                 {
                     var hash = $"{instruction.Action}:{instruction.X}:{instruction.Y}:{instruction.Slot}:{instruction.Npc}:{instruction.Text}";
-                    if (hash == lastInstructionHash)
-                    {
-                        return;
-                    }
+                    if (hash == lastInstructionHash) return;
                     lastInstructionHash = hash;
                 }
 
@@ -68,42 +104,56 @@ namespace AICompanion
 
                 if (result.Success)
                 {
-                    // 执行成功，删除指令文件
                     InstructionExecutor.ConfirmConsumed(Monitor);
+                    Monitor.Log($"[AI] 指令执行成功: {instruction.Action}", LogLevel.Info);
                 }
                 else
                 {
-                    // 执行失败，保留文件等待重试
-                    Monitor.Log($"指令 [{instruction.Action}] 失败: {result.Error}，保留文件等待重试", LogLevel.Warn);
+                    Monitor.Log($"[AI] 指令失败: {instruction.Action} - {result.Error}", LogLevel.Warn);
                 }
 
-                // 特殊处理 wait 指令
                 if (instruction.Action?.ToLower() == "wait" && result.Success)
                 {
                     int ms = instruction.DurationMs ?? 1000;
-                    waitTicksRemaining = ms / 500;  // 每 tick ≈ 500ms
+                    waitTicksRemaining = ms / 500;
                     if (waitTicksRemaining < 1) waitTicksRemaining = 1;
                 }
             }
 
-            // === 3. 每秒写一次状态 ===
-            if (tickCount % 2 == 0)  // 每 2 tick ≈ 1 秒
+            // === 2. 每秒写一次状态 ===
+            if (tickCount % 2 == 0)
             {
                 var state = GameStateReader.Read(Monitor);
                 GameStateReader.WriteState(state, Monitor);
             }
 
-            // === 4. 每 30 秒打一次日志 ===
+            // === 3. 每 30 秒打一次日志 ===
             if (tickCount % 60 == 0)
             {
                 var state = GameStateReader.Read(Monitor);
-                Monitor.Log($"[{state.TimeString}] {state.PlayerName} @ {state.LocationName} " +
+                Monitor.Log($"[AI] [{state.TimeString}] {state.PlayerName} @ {state.LocationName} " +
                     $"({state.PlayerX:F0},{state.PlayerY:F0}) " +
-                    $"HP:{state.Health}/{state.MaxHealth} E:{state.Energy}/{state.MaxEnergy} " +
-                    $"Gold:{state.Gold} Items:{state.ItemCount}",
+                    $"HP:{state.Health} E:{state.Energy} Gold:{state.Gold}",
                     LogLevel.Info);
             }
         }
+
+        // ==================== 主机模式 ====================
+        // 只写状态，不执行指令（主人手动控制）
+
+        private void OnHostTick(object sender, UpdateTickedEventArgs e)
+        {
+            if (!Context.IsWorldReady) return;
+            if (!e.IsMultipleOf(60)) return;  // 每 1 秒
+
+            tickCount++;
+
+            // 每秒写一次状态（供 Python 监控）
+            var state = GameStateReader.Read(Monitor);
+            GameStateReader.WriteState(state, Monitor);
+        }
+
+        // ==================== 通用事件 ====================
 
         private void OnPlayerWarped(object sender, WarpedEventArgs e)
         {
@@ -126,10 +176,8 @@ namespace AICompanion
             Monitor.Log("返回标题，清理通信文件", LogLevel.Info);
             try
             {
-                if (File.Exists(GameConfig.StateFile))
-                    File.Delete(GameConfig.StateFile);
-                if (File.Exists(GameConfig.InstructionFile))
-                    File.Delete(GameConfig.InstructionFile);
+                if (File.Exists(GameConfig.StateFile)) File.Delete(GameConfig.StateFile);
+                if (File.Exists(GameConfig.InstructionFile)) File.Delete(GameConfig.InstructionFile);
             }
             catch { }
         }
