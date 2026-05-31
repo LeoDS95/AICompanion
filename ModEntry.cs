@@ -30,8 +30,34 @@ namespace AICompanion
 
         private void OnGameLaunched(object sender, GameLaunchedEventArgs e)
         {
-            // 延迟检查，等待联机建立
+            // 检查进程数，决定是否激活 AI
+            int processCount = CountStardewProcesses();
+            Monitor.Log($"[检测] 游戏进程数: {processCount}", LogLevel.Info);
+
+            if (processCount <= 1)
+            {
+                // 只有一个进程 → 主机模式，不激活 AI
+                Monitor.Log("[模式] 主机模式 - Mod 不激活", LogLevel.Info);
+                return;
+            }
+
+            // 有多个进程 → 可能是 AI 实例，开始检测
+            Monitor.Log("[模式] 检测到多个游戏实例，开始联机检测...", LogLevel.Info);
             _helper.Events.GameLoop.UpdateTicked += OnInitialCheck;
+        }
+
+        private int CountStardewProcesses()
+        {
+            try
+            {
+                // 统计 StardewModdingAPI.exe 进程数
+                var processes = System.Diagnostics.Process.GetProcessesByName("StardewModdingAPI");
+                return processes.Length;
+            }
+            catch
+            {
+                return 1;  // 出错时默认当作主机
+            }
         }
 
         private int _initCheckTicks = 0;
@@ -39,9 +65,19 @@ namespace AICompanion
         private void OnInitialCheck(object sender, UpdateTickedEventArgs e)
         {
             _initCheckTicks++;
-            if (_initCheckTicks < 60) return;  // 等待约1秒
+            
+            // 等待游戏世界加载完成
+            if (!Context.IsWorldReady)
+            {
+                if (_initCheckTicks % 120 == 0)  // 每2秒打印一次
+                    Monitor.Log("[检测] 等待游戏加载...", LogLevel.Info);
+                return;
+            }
 
+            // 游戏已加载，检测模式
             _helper.Events.GameLoop.UpdateTicked -= OnInitialCheck;
+
+            Monitor.Log($"[检测] 游戏已加载 IsMultiplayer={Context.IsMultiplayer}, IsMainPlayer={Context.IsMainPlayer}", LogLevel.Info);
 
             // 清理旧指令
             if (File.Exists(GameConfig.InstructionFile))
@@ -63,8 +99,7 @@ namespace AICompanion
                 Monitor.Log("[模式] 主机/单人模式 - 主人手动控制", LogLevel.Info);
                 Monitor.Log("[主机] Mod 不干预，主人自由游戏", LogLevel.Info);
 
-                // 主机也写状态（供 Python 监控用）
-                _helper.Events.GameLoop.UpdateTicked += OnHostTick;
+                // 主机不写状态文件，避免覆盖 AI 的状态
                 _helper.Events.Player.Warped += OnPlayerWarped;
                 _helper.Events.GameLoop.TimeChanged += OnTimeChanged;
                 _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
