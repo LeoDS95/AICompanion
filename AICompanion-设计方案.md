@@ -1,177 +1,96 @@
 # AI Companion — 星露谷物语 AI 玩伴 Mod
 
-> 最后更新：2026-05-31 11:30 GMT+8
+> 最后更新：2026-05-31 13:42 GMT+8
 > 游戏路径：`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley`
 
 ---
 
-## 一、项目概述
+## 一、项目目标
 
-**目标**：SMAPI Mod 让 AI 控制游戏角色，通过局域网联机陪主人玩星露谷。
+**做一个 AI 伙伴，陪主人一起玩星露谷。**
 
-**核心原则**：
-- Mod 越薄越好（纯执行器，不含决策逻辑）
-- 决策全在 Python 侧（天然支持大模型驱动）
-- 通过 JSON 文件通信，无网络依赖
+通过局域网联机，AI 控制第二个角色，能和主人对话、一起行动。
 
 ---
 
-## 二、联机方案
+## 二、已完成 ✅
 
-### 双实例局域网联机
-
-从文件夹启动第二个游戏实例，一个选「合作→主持农场」，另一个选「加入局域网→不输入IP」，直接以第二个角色加入。
-
-```
-┌──────────────┐         ┌──────────────┐
-│   游戏实例1   │  局域网  │   游戏实例2   │
-│  (主人手动)   │◄───────►│  (AI 控制)    │
-│  主持农场     │  自动    │  加入局域网   │
-└──────────────┘  连接    └──────┬───────┘
-                                │
-                          SMAPI + AICompanion
-                                │
-                          state.json ──► Python ──► LLM
-```
-
-### 优势
-
-- ✅ 零网络代码，游戏自带联机
-- ✅ 完整游戏同步（位置、动作、聊天）
-- ✅ 主人存档不变，游戏2是新角色
-- ✅ 游戏内聊天，AI 可通过 say 指令说话
-
-### Mod 自动检测身份
-
-Mod 启动时自动判断：
-- **主机（`Context.IsMainPlayer`）**→ 主人模式，不干预，只写状态供监控
-- **加入者（`!Context.IsMainPlayer`）**→ AI 模式，读状态 + 执行指令
-
-主人只需手动启动两个游戏实例，Mod 自动切换模式。
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 双实例局域网联机 | ✅ | 主人主持农场，AI 加入局域网 |
+| 进程数自动检测 | ✅ | 1进程=主机模式，2进程=AI模式 |
+| AI 模式激活 | ✅ | 加入者自动进入 AI 模式 |
+| 游戏状态读取 | ✅ | 位置、时间、体力、背包等 |
+| 指令执行 | ✅ | 移动、传送、说话、等待等 |
+| 聊天检测 | ✅ | Mod 能检测玩家在游戏里发的消息 |
+| Python 监听器 | ✅ | Python 读取玩家消息并打印 |
+| AI 回话（本地） | ✅ | AI 能在自己的游戏实例里说话 |
 
 ---
 
-## 三、架构
+## 三、未完成 ❌
+
+### 1. 跨实例聊天（核心问题）
+
+**问题**：AI 回复的消息只出现在 AI 实例，主机看不到。
+
+**尝试过的方法**：
+- ❌ `Game1.chatBox.addMessage()` → 只在本地显示
+- ❌ `helper.Multiplayer.SendMessage()` → SMAPI Mod 间通信，不触发游戏聊天框
+
+**需要解决**：让 AI 的消息在主机的聊天框里显示。
+
+### 2. LLM 集成
+
+**目标**：玩家说话 → AI 理解 → 自主决策 → 执行动作
+
+**当前状态**：只做了 echo 回显测试，还没接大模型。
+
+### 3. 动作执行
+
+**目标**：AI 能自动浇水、挖矿、砍树、钓鱼等。
+
+**当前状态**：只有基础移动和传送，还没实现具体动作。
+
+---
+
+## 四、架构
 
 ```
 ┌──────────────┐                    ┌──────────────┐
 │   游戏实例1   │    局域网联机      │   游戏实例2   │
 │  (主人控制)   │◄──────────────────►│  (AI 控制)    │
-│  无Mod       │    游戏内同步       │  AICompanion │
+│  主机模式     │    游戏内同步       │  AI 模式     │
 └──────────────┘                    └──────┬───────┘
                                           │
                                     state.json │ instruction.json
                                           │
                                     ┌─────▼─────┐
                                     │   Python   │
-                                    │  (AI 决策) │
+                                    │  监听器    │
                                     └─────┬─────┘
                                           │
                                     ┌─────▼─────┐
-                                    │  大模型 API │
+                                    │  OpenClaw  │
+                                    │  (AI 决策) │
                                     └───────────┘
 ```
 
 ### 通信流程
 
 ```
-每0.5秒: AI Mod → 读游戏状态 → 写 state.json
-每0.5秒: AI Mod → 读 instruction.json → 执行成功则删除，失败保留重试
-Python: 读 state.json → 规划 → 写 instruction.json
+玩家打字 → Mod 检测 → chat.json → Python 读取 → 打印到控制台
+                                                      ↓
+                                              OpenClaw 看到消息
+                                                      ↓
+                                              OpenClaw 写指令
+                                                      ↓
+Mod 执行 ← instruction.json ← Python ← OpenClaw
 ```
 
-### 通信目录
-
-`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\ai\`
-
-| 文件 | 方向 | 说明 |
-|------|------|------|
-| `state.json` | Mod → Python | 游戏状态快照 |
-| `instruction.json` | Python → Mod | 单条指令，读后删除 |
-| `persona.json` | 玩家编辑 → Python | AI 人设配置 |
-
 ---
 
-## 四、当前已实现
-
-### 指令集
-
-| 指令 | 参数 | 说明 |
-|------|------|------|
-| `moveTo` | X, Y | 瞬移（调试用） |
-| `walkTo` | X, Y | 走路（游戏内建寻路） |
-| `interact` | X, Y | 与物体交互 |
-| `useItem` | Slot | 使用背包物品 |
-| `changeItem` | Slot | 切换物品槽位 |
-| `talkTo` | Npc | 与 NPC 对话 |
-| `emote` | Text | 显示表情 |
-| `say` | Text | 聊天框说话 |
-| `wait` | DurationMs | 等待 |
-| `locate` | — | 镜头定位到角色 |
-| `warpTo` | 地图名, X, Y | 地图传送 |
-
-### state.json 字段
-
-```json
-{
-  "PlayerName": "AI角色名",
-  "PlayerX": 576, "PlayerY": 608,
-  "Health": 100, "MaxHealth": 100,
-  "Energy": 270, "MaxEnergy": 270,
-  "Gold": 500,
-  "FarmingLevel": 0, "MiningLevel": 0, "FishingLevel": 0, "CombatLevel": 0,
-  "LocationName": "FarmHouse",
-  "Season": "spring", "Day": 1, "Year": 1,
-  "TimeOfDay": 600, "TimeString": "06:00",
-  "Weather": "晴天",
-  "NpcCount": 0, "MonsterCount": 0,
-  "ItemCount": 5,
-  "InventorySummary": "Axex1, Hoex1, Watering Canx1, Pickaxex1, Scythex1",
-  "WaitingForInstruction": true,
-  "IsWalking": false,
-  "WalkStepsRemaining": 0,
-  "IsMultiplayer": true,
-  "IsMainPlayer": false,
-  "PlayerCount": 2,
-  "LastError": null
-}
-```
-
-### 修复记录
-
-| 问题 | 原因 | 修复 |
-|------|------|------|
-| 室内寻路走不动 | `isCollidingPosition` 触发家具碰撞 | 改用 `isTilePassable` |
-| 寻路太慢 | 自定义 A* 慢 | 改用游戏内建 `PathFindController` |
-| 指令重复执行 | 文件删除有延迟 | 执行成功才删，失败保留重试 |
-| emote 鬼畜 | 同一指令重复读取 | 加去重 hash |
-
----
-
-## 五、开发计划
-
-### P0 — 核心功能
-
-| 序号 | 任务 | 说明 |
-|------|------|------|
-| 1 | Action Queue | Python 侧维护队列，一次规划多步 |
-| 2 | IsBusy | 动画完成态，防止指令堆积 |
-| 3 | 暂停游戏时钟 | 等待指令时时钟暂停 |
-| 4 | PerceivedObjects | 传送点 + 白名单 |
-| 5 | 玩家行为感知 | AI 知道主人在做什么 |
-
-### P1 — 智能层
-
-| 序号 | 任务 | 说明 |
-|------|------|------|
-| 6 | 陪伴行为模式 | 根据主人行为切换 AI 模式 |
-| 7 | Goal 系统 | 长期目标，减少决策空间 |
-| 8 | Persona 配置 | persona.json 注入人设 |
-| 9 | 联机状态感知 | AI 知道主人在哪、在做什么 |
-
----
-
-## 六、文件结构
+## 五、文件结构
 
 ```
 AICompanion/                    # 源码目录
@@ -181,28 +100,70 @@ AICompanion/                    # 源码目录
 ├── GameConfig.cs               # 通信路径配置
 ├── GameStateReader.cs          # 读取游戏状态
 ├── InstructionExecutor.cs      # 执行指令
-└── ai_bridge.py                # Python 端（待完善）
+├── chat_listener.py            # Python 监听器
+└── ai_bridge.py                # Python 控制脚本（待完善）
 
 游戏目录/Mods/AICompanion/       # Mod 部署目录
 ├── AICompanion.dll
 └── manifest.json
 
 游戏目录/ai/                     # 通信目录
-├── state.json
-├── instruction.json
-└── persona.json
+├── state.json                  # 游戏状态
+├── instruction.json            # 指令文件
+├── chat.json                   # 聊天消息
+└── persona.json                # AI 人设配置
 ```
 
 ---
 
-## 七、里程碑
+## 六、下一步
+
+### 优先级 1：跨实例聊天
+
+**目标**：AI 回复的消息在主机聊天框显示。
+
+**可能的方案**：
+- 主机实例也运行监听脚本，读取共享文件
+- 用 Harmony 补丁 Hook 游戏的多人聊天系统
+- 研究 Stardew Valley 的多人聊天 API
+
+### 优先级 2：LLM 集成
+
+**目标**：玩家说话 → AI 理解 → 自主决策。
+
+**方案**：
+- Python 读取消息 + 游戏状态
+- 发送给 OpenClaw 或其他 LLM
+- LLM 返回决策
+- Python 写入指令
+
+### 优先级 3：动作执行
+
+**目标**：AI 能执行浇水、挖矿、砍树、钓鱼等动作。
+
+**方案**：
+- 扩展指令集
+- 实现具体动作的执行逻辑
+
+---
+
+## 七、GitHub
+
+https://github.com/LeoDS95/AICompanion
+
+---
+
+## 八、里程碑
 
 | 日期 | 里程碑 | 状态 |
 |------|--------|------|
-| 2026-05-31 | 联机 + AI 控制全链路打通 | ✅ 完成 |
-| 2026-05-31 | 进程数检测（1进程=主机，2进程=AI） | ✅ 完成 |
-| 2026-05-31 | Python Bridge 基础通信 | ✅ 完成 |
-| TBD | Action Queue（多步规划） | 待开发 |
-| TBD | LLM 决策集成 | 待开发 |
-
-https://github.com/LeoDS95/AICompanion
+| 2026-05-31 | 双实例局域网联机 | ✅ |
+| 2026-05-31 | 进程数自动检测 | ✅ |
+| 2026-05-31 | AI 模式激活 | ✅ |
+| 2026-05-31 | 游戏状态读取 | ✅ |
+| 2026-05-31 | 指令执行 | ✅ |
+| 2026-05-31 | 聊天检测 | ✅ |
+| 2026-05-31 | Python 监听器 | ✅ |
+| TBD | 跨实例聊天 | ❌ 待解决 |
+| TBD | LLM 集成 | ❌ 待开发 |
+| TBD | 动作执行 | ❌ 待开发 |

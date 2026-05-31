@@ -102,6 +102,7 @@ namespace AICompanion
                 // 主机不写状态文件，避免覆盖 AI 的状态
                 _helper.Events.Player.Warped += OnPlayerWarped;
                 _helper.Events.GameLoop.TimeChanged += OnTimeChanged;
+                _helper.Events.Multiplayer.ModMessageReceived += OnModMessageReceived;
                 _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
             }
         }
@@ -135,7 +136,7 @@ namespace AICompanion
                     lastInstructionHash = hash;
                 }
 
-                var result = InstructionExecutor.Execute(instruction, Monitor);
+                var result = InstructionExecutor.Execute(instruction, Monitor, _helper);
 
                 if (result.Success)
                 {
@@ -162,7 +163,13 @@ namespace AICompanion
                 GameStateReader.WriteState(state, Monitor);
             }
 
-            // === 3. 每 30 秒打一次日志 ===
+            // === 3. 检查聊天消息 ===
+            if (tickCount % 6 == 0)  // 每 0.5 秒检查一次
+            {
+                CheckChatMessages();
+            }
+
+            // === 4. 每 30 秒打一次日志 ===
             if (tickCount % 60 == 0)
             {
                 var state = GameStateReader.Read(Monitor);
@@ -176,6 +183,8 @@ namespace AICompanion
         // ==================== 主机模式 ====================
         // 只写状态，不执行指令（主人手动控制）
 
+        private long _lastMessageTimestamp = 0;
+
         private void OnHostTick(object sender, UpdateTickedEventArgs e)
         {
             if (!Context.IsWorldReady) return;
@@ -186,6 +195,184 @@ namespace AICompanion
             // 每秒写一次状态（供 Python 监控）
             var state = GameStateReader.Read(Monitor);
             GameStateReader.WriteState(state, Monitor);
+
+            // 检查 AI 消息
+            CheckAIMessage();
+        }
+
+        private void CheckAIMessage()
+        {
+            try
+            {
+                var chatMsgFile = Path.Combine(GameConfig.AIDir, "ai_message.json");
+                if (!File.Exists(chatMsgFile)) return;
+
+                var json = File.ReadAllText(chatMsgFile);
+                var msgData = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
+                
+                long timestamp = msgData.GetProperty("Timestamp").GetInt64();
+                string text = msgData.GetProperty("Text").GetString();
+
+                // 只处理新消息
+                if (timestamp > _lastMessageTimestamp)
+                {
+                    _lastMessageTimestamp = timestamp;
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        Game1.chatBox.addMessage(text, Microsoft.Xna.Framework.Color.Cyan);
+                        Monitor.Log($"[主机] AI 说: {text}", LogLevel.Info);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // 检查消息失败不影响主功能
+                Monitor.Log($"[主机] 检查 AI 消息失败: {ex.Message}", LogLevel.Debug);
+            }
+        }
+
+        // ==================== 聊天检测 ====================
+
+        private int _lastChatCount = 0;
+
+        private void CheckChatMessages()
+        {
+            try
+            {
+                var chatBox = Game1.chatBox;
+                if (chatBox == null) return;
+
+                // 获取当前消息数量
+                var messagesField = chatBox.GetType().GetField("messages",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (messagesField?.GetValue(chatBox) is System.Collections.IList messages)
+                {
+                    int currentCount = messages.Count;
+                    if (currentCount > _lastChatCount)
+                    {
+                        // 有新消息
+                        for (int i = _lastChatCount; i < currentCount; i++)
+                        {
+                            var msg = messages[i];
+                            
+                            // 提取消息文本（可能是 ChatSnippet 列表）
+                            string messageText = ExtractChatText(msg);
+
+                            if (!string.IsNullOrEmpty(messageText) && !messageText.StartsWith("[AI]"))
+                            {
+                                Monitor.Log($"[聊天] {messageText}", LogLevel.Info);
+
+                                // 写入聊天文件供 Python 读取
+                                WriteChatMessage("主人", messageText);
+                            }
+                        }
+                        _lastChatCount = currentCount;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // 聊天检测失败不影响主功能
+                Monitor.Log($"[聊天] 检测失败: {ex.Message}", LogLevel.Debug);
+            }
+        }
+
+        private void WriteChatMessage(string sender, string message)
+        {
+            try
+            {
+                var chatFile = Path.Combine(GameConfig.AIDir, "chat.json");
+                var chatData = new
+                {
+                    Sender = sender,
+                    Message = message,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                };
+                var json = System.Text.Json.JsonSerializer.Serialize(chatData,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(chatFile, json);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[聊天] 写入失败: {ex.Message}", LogLevel.Warn);
+            }
+        }
+
+        /// <summary>
+        /// 从聊天消息对象中提取文本
+        /// 消息可能是 string 或 List&lt;ChatSnippet&gt;
+        /// </summary>
+        private string ExtractChatText(object msg)
+        {
+            if (msg == null) return null;
+
+            // 如果是字符串，直接返回
+            if (msg is string str) return str;
+
+            try
+            {
+                // 尝试获取 message 字段
+                var msgField = msg.GetType().GetField("message",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (msgField != null)
+                {
+                    var value = msgField.GetValue(msg);
+                    
+                    // 如果是字符串，直接返回
+                    if (value is string text) return text;
+                    
+                    // 如果是 List<Snippet>，遍历拼接
+                    if (value is System.Collections.IList snippets)
+                    {
+                        var result = new System.Text.StringBuilder();
+                        foreach (var snippet in snippets)
+                        {
+                            // 每个 Snippet 可能有 message 或 text 字段
+                            var snippetField = snippet.GetType().GetField("message",
+                                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance) ??
+                                snippet.GetType().GetField("text",
+                                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            
+                            if (snippetField != null)
+                            {
+                                result.Append(snippetField.GetValue(snippet));
+                            }
+                        }
+                        return result.ToString();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[聊天] 提取文本失败: {ex.Message}", LogLevel.Debug);
+            }
+
+            return msg.ToString();
+        }
+
+        // ==================== 主机消息接收 ====================
+
+        private void OnModMessageReceived(object sender, ModMessageReceivedEventArgs e)
+        {
+            try
+            {
+                // 只处理来自同一 Mod 的消息
+                if (e.FromModID != ModManifest.UniqueID) return;
+                if (e.Type != "AIChat") return;
+
+                // 读取消息内容
+                string message = e.ReadAs<string>();
+                if (string.IsNullOrEmpty(message)) return;
+
+                Monitor.Log($"[主机] 收到 AI 消息: {message}", LogLevel.Info);
+
+                // 显示在主机的聊天框
+                Game1.chatBox.addMessage(message, Microsoft.Xna.Framework.Color.Cyan);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[主机] 处理消息失败: {ex.Message}", LogLevel.Warn);
+            }
         }
 
         // ==================== 通用事件 ====================
