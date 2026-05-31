@@ -22,12 +22,16 @@ namespace AICompanion
         private bool _isFollowingAI = false;  // 是否正在跟随 AI 视角
         private Farmer _aiFarmer = null;      // AI 角色引用
 
+        // ── 配置 ──────────────────────────────────────────────────────
+        private ModConfig Config;
+
         // ── Python 进程 ───────────────────────────────────────────────
         private Process _pythonProcess = null;
 
         public override void Entry(IModHelper helper)
         {
             _helper = helper;
+            Config = helper.ReadConfig<ModConfig>();
             
             var gameDir = Directory.GetParent(
                 Directory.GetParent(helper.DirectoryPath).FullName
@@ -51,11 +55,125 @@ namespace AICompanion
             // ★ 关键：在 Entry() 注册，主机和客户端都能收到广播
             helper.Events.Multiplayer.ModMessageReceived += OnMessageReceived;
 
+            // ── 注册 GMCM 设置页面 ──────────────────────────────────────
+            helper.Events.GameLoop.GameLaunched += OnGameLaunched;
+
             // ── 自动启动 Python（仅主机） ────────────────────────────────
             if (Context.IsMainPlayer)
             {
                 StartPythonBridge();
             }
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // GMCM 设置页面注册
+        // ══════════════════════════════════════════════════════════════
+
+        private void OnGameLaunched(object sender, GameLaunchedEventArgs e)
+        {
+            var configMenu = Helper.ModRegistry.GetApi<IGenericModConfigMenuApi>("spacechase0.GenericModConfigMenu");
+            if (configMenu == null)
+            {
+                Monitor.Log("[GMCM] 未找到 Generic Mod Config Menu，跳过设置页面注册", LogLevel.Warn);
+                return;
+            }
+
+            // 注册配置
+            configMenu.Register(
+                modManifest: ModManifest,
+                reset: () => Config = new ModConfig(),
+                save: () => Helper.WriteConfig(Config)
+            );
+
+            // ── AI 人设 ──────────────────────────────────────────────
+            configMenu.AddSectionTitle(
+                modManifest: ModManifest,
+                text: () => "AI 人设设置"
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "AI 名字",
+                tooltip: () => "给你的 AI 伙伴取个名字",
+                getValue: () => Config.AIName,
+                setValue: value => Config.AIName = value
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "AI 性格",
+                tooltip: () => "选择 AI 的性格类型",
+                getValue: () => Config.AIPersonality,
+                setValue: value => Config.AIPersonality = value,
+                allowedValues: new[] { "活泼可爱", "温柔体贴", "搞笑幽默", "认真勤恳" }
+            );
+
+            // ── LLM 配置 ──────────────────────────────────────────────
+            configMenu.AddSectionTitle(
+                modManifest: ModManifest,
+                text: () => "LLM API 配置"
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "API 提供商",
+                tooltip: () => "选择 LLM 提供商，会自动填充 Base URL 和默认模型",
+                getValue: () => Config.LLMProvider,
+                setValue: value =>
+                {
+                    Config.LLMProvider = value;
+                    Config.ApplyPreset(value);
+                },
+                allowedValues: new[] { "OpenAI", "Claude", "Gemini", "XAI", "DeepSeek", "MiMo", "自定义" }
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "API Key",
+                tooltip: () => "输入你的 API Key（不会显示在游戏内）",
+                getValue: () => Config.APIKey,
+                setValue: value => Config.APIKey = value
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "模型",
+                tooltip: () => "选择使用的模型",
+                getValue: () => Config.Model,
+                setValue: value => Config.Model = value
+            );
+
+            configMenu.AddTextOption(
+                modManifest: ModManifest,
+                name: () => "Base URL",
+                tooltip: () => "API 基础地址（通常自动填充）",
+                getValue: () => Config.BaseURL,
+                setValue: value => Config.BaseURL = value
+            );
+
+            // ── 功能开关 ──────────────────────────────────────────────
+            configMenu.AddSectionTitle(
+                modManifest: ModManifest,
+                text: () => "功能开关"
+            );
+
+            configMenu.AddBoolOption(
+                modManifest: ModManifest,
+                name: () => "自动启动 Python",
+                tooltip: () => "启动游戏时自动运行 Python 控制脚本",
+                getValue: () => Config.AutoStartPython,
+                setValue: value => Config.AutoStartPython = value
+            );
+
+            configMenu.AddBoolOption(
+                modManifest: ModManifest,
+                name: () => "陪伴模式",
+                tooltip: () => "开启 AI 陪伴互动（主动打招呼、关心、闲聊）",
+                getValue: () => Config.EnableCompanionMode,
+                setValue: value => Config.EnableCompanionMode = value
+            );
+
+            Monitor.Log("[GMCM] 设置页面注册成功", LogLevel.Info);
         }
 
         // ══════════════════════════════════════════════════════════════
