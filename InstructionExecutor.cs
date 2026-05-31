@@ -12,13 +12,13 @@ namespace AICompanion
     /// <summary>指令结构</summary>
     public class Instruction
     {
-        public string Action      { get; set; } // moveTo, walkTo, interact, useItem, changeItem, talkTo, emote, say, wait
-        public int?   X           { get; set; }
-        public int?   Y           { get; set; }
-        public int?   Slot        { get; set; }
-        public string Npc         { get; set; }
-        public string Text        { get; set; }
-        public int?   DurationMs  { get; set; }
+        public string Action     { get; set; } // walkTo, moveTo, interact, useItem, changeItem, talkTo, emote, say, wait
+        public int?   X          { get; set; }
+        public int?   Y          { get; set; }
+        public int?   Slot       { get; set; }
+        public string Npc        { get; set; }
+        public string Text       { get; set; }
+        public int?   DurationMs { get; set; }
     }
 
     /// <summary>指令执行结果</summary>
@@ -36,46 +36,51 @@ namespace AICompanion
             PropertyNameCaseInsensitive = true
         };
 
-        // ── 读取指令 ─────────────────────────────────────────────────────
+        // =====================================================================
+        // 读取指令
+        // =====================================================================
+
+        /// <summary>
+        /// 读取 instruction.json。
+        /// 内部原子地完成：读取 → 立即删除文件（防止重复执行）。
+        /// 没有文件或解析失败返回 null。
+        /// </summary>
         public static Instruction ReadInstruction(IMonitor monitor)
         {
+            if (!File.Exists(GameConfig.InstructionFile))
+                return null;
+
+            string json = null;
             try
             {
-                if (!File.Exists(GameConfig.InstructionFile)) return null;
-
-                var json = File.ReadAllText(GameConfig.InstructionFile);
-                File.WriteAllText(GameConfig.InstructionFile, ""); // 立即清空，防止重复读
-
-                if (string.IsNullOrWhiteSpace(json)) return null;
-
-                var instruction = JsonSerializer.Deserialize<Instruction>(json, JsonOptions);
-                try { File.Delete(GameConfig.InstructionFile); } catch { }
-                return instruction;
+                // 读完后立刻删除，避免 Python 端看到"旧指令还在"
+                json = File.ReadAllText(GameConfig.InstructionFile);
+                File.Delete(GameConfig.InstructionFile);
             }
             catch (Exception ex)
             {
-                monitor.Log($"读取指令出错: {ex.Message}", LogLevel.Warn);
+                monitor.Log($"读取/删除指令文件出错: {ex.Message}", LogLevel.Warn);
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            try
+            {
+                return JsonSerializer.Deserialize<Instruction>(json, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                monitor.Log($"解析指令 JSON 出错: {ex.Message}", LogLevel.Warn);
                 return null;
             }
         }
 
-        /// <summary>
-        /// 确认指令已消费（删除指令文件）
-        /// </summary>
-        public static void ConfirmConsumed(IMonitor monitor)
-        {
-            try
-            {
-                if (File.Exists(GameConfig.InstructionFile))
-                    File.Delete(GameConfig.InstructionFile);
-            }
-            catch (Exception ex)
-            {
-                monitor.Log($"删除指令文件失败: {ex.Message}", LogLevel.Warn);
-            }
-        }
+        // =====================================================================
+        // 执行指令
+        // =====================================================================
 
-        // ── 执行分发 ─────────────────────────────────────────────────────
         public static InstructionResult Execute(Instruction instruction, IMonitor monitor)
         {
             if (instruction == null || string.IsNullOrEmpty(instruction.Action))
@@ -92,19 +97,8 @@ namespace AICompanion
                     "changeitem" => ExecuteChangeItem(instruction, monitor),
                     "talkto"     => ExecuteTalkTo(instruction, monitor),
                     "emote"      => ExecuteEmote(instruction, monitor),
+                    "say"        => ExecuteSay(instruction, monitor),
                     "wait"       => ExecuteWait(instruction, monitor),
-
-                    // ★ 高层意图（Python 决定做什么，Mod 决定怎么做）
-                    "goal"       => ExecuteGoal(instruction, monitor),
-
-                    // ★ say 由 ModEntry.BroadcastChat() 处理，不应到达这里
-                    "say"        => new InstructionResult
-                    {
-                        Success = false,
-                        Action  = "say",
-                        Error   = "say 应由 ModEntry 拦截，未到达 Executor"
-                    },
-
                     _ => new InstructionResult
                     {
                         Success = false,
@@ -125,22 +119,28 @@ namespace AICompanion
             }
         }
 
-        // ── moveTo：直接传送到指定 tile ─────────────────────────────────
+        // =====================================================================
+        // moveTo — 直接传送（无动画）
+        // =====================================================================
+
         private static InstructionResult ExecuteMoveTo(Instruction inst, IMonitor monitor)
         {
             if (inst.X == null || inst.Y == null)
                 return new InstructionResult { Success = false, Action = "moveTo", Error = "缺少 X 或 Y" };
 
-            var player = Game1.player;
-            float px = inst.X.Value * 64f;
-            float py = inst.Y.Value * 64f;
+            var player  = Game1.player;
+            float px    = inst.X.Value * 64f;
+            float py    = inst.Y.Value * 64f;
             player.Position = new Vector2(px, py);
 
-            monitor.Log($"moveTo tile ({inst.X},{inst.Y}) → 像素 ({px},{py})", LogLevel.Info);
+            monitor.Log($"moveTo tile ({inst.X},{inst.Y})", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "moveTo" };
         }
 
-        // ── walkTo：A* 寻路，有动画 ──────────────────────────────────────
+        // =====================================================================
+        // walkTo — A* 寻路行走（有动画）
+        // =====================================================================
+
         private static InstructionResult ExecuteWalkTo(Instruction inst, IMonitor monitor)
         {
             if (inst.X == null || inst.Y == null)
@@ -151,17 +151,15 @@ namespace AICompanion
             if (loc == null)
                 return new InstructionResult { Success = false, Action = "walkTo", Error = "当前无位置" };
 
-            int curX = (int)(player.Position.X / 64f);
-            int curY = (int)(player.Position.Y / 64f);
-            int tgtX = inst.X.Value;
-            int tgtY = inst.Y.Value;
+            int curX    = (int)(player.Position.X / 64f);
+            int curY    = (int)(player.Position.Y / 64f);
+            int targetX = inst.X.Value;
+            int targetY = inst.Y.Value;
 
-            var path = FindPath(curX, curY, tgtX, tgtY, loc, monitor);
+            var path = FindPath(curX, curY, targetX, targetY, loc, monitor);
             if (path == null || path.Count == 0)
             {
-                monitor.Log($"walkTo ({tgtX},{tgtY}) 寻路失败，调试：", LogLevel.Warn);
-                LogSurroundingTiles(tgtX, tgtY, loc, "目标", monitor);
-                LogSurroundingTiles(curX, curY, loc, "起点", monitor);
+                LogWalkFailureDebug(curX, curY, targetX, targetY, loc, monitor);
                 return new InstructionResult { Success = false, Action = "walkTo", Error = "无可达路径" };
             }
 
@@ -169,295 +167,165 @@ namespace AICompanion
             {
                 nonDestructivePathing = true
             };
-            monitor.Log($"walkTo ({tgtX},{tgtY})：开始行走，路径 {path.Count} 步", LogLevel.Info);
+
+            monitor.Log($"walkTo ({targetX},{targetY})：路径 {path.Count} 步", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "walkTo" };
         }
 
-        private static void LogSurroundingTiles(int cx, int cy, GameLocation loc, string label, IMonitor monitor)
-        {
-            int w = loc.Map?.Layers?[0]?.LayerWidth  ?? 50;
-            int h = loc.Map?.Layers?[0]?.LayerHeight ?? 50;
-            monitor.Log($"{label} ({cx},{cy}) 周围：", LogLevel.Warn);
-            for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++)
-            {
-                if (dx == 0 && dy == 0) continue;
-                int tx = cx + dx, ty = cy + dy;
-                monitor.Log($"  tile ({tx},{ty}): {(IsWalkable(tx,ty,loc,w,h) ? "可走" : "不可走")}", LogLevel.Warn);
-            }
-        }
+        // =====================================================================
+        // A* 寻路
+        // =====================================================================
 
-        // ── A* ───────────────────────────────────────────────────────────
-        private static Stack<Point> FindPath(int sx, int sy, int ex, int ey, GameLocation loc, IMonitor monitor)
+        /// <summary>
+        /// 修复：原版用 SortedSet&lt;(f,g,x,y)&gt; 作 open set，
+        /// 当两个节点 f、g 相同但坐标不同时 tuple 比较相等，
+        /// 导致后一个节点被丢弃（SortedSet 不允许重复键）。
+        ///
+        /// 修复方案：改用优先队列（.NET 6+ PriorityQueue），
+        /// 按 f 值排序，坐标单独存，彻底解决碰撞问题。
+        /// </summary>
+        private static Stack<Point> FindPath(
+            int startX, int startY,
+            int endX,   int endY,
+            GameLocation loc,
+            IMonitor monitor)
         {
             int mapW = loc.Map?.Layers?[0]?.LayerWidth  ?? 50;
             int mapH = loc.Map?.Layers?[0]?.LayerHeight ?? 50;
 
-            if (ex < 0 || ey < 0 || ex >= mapW || ey >= mapH) return null;
-            if (!IsWalkable(ex, ey, loc, mapW, mapH)) return null;
+            if (endX < 0 || endY < 0 || endX >= mapW || endY >= mapH)
+                return null;
 
-            var openSet   = new SortedSet<(int f, int g, int x, int y)>();
-            var cameFrom  = new Dictionary<(int,int),(int,int)>();
-            var gScore    = new Dictionary<(int,int),int>();
-            var closed    = new HashSet<(int,int)>();
+            if (!IsWalkable(endX, endY, loc, mapW, mapH))
+                return null;
 
-            gScore[(sx,sy)] = 0;
-            openSet.Add((H(sx,sy,ex,ey), 0, sx, sy));
+            // (x, y) → 该节点当前最优 g 值
+            var gScore   = new Dictionary<(int, int), int>();
+            // (x, y) → 父节点
+            var cameFrom = new Dictionary<(int, int), (int, int)>();
+            // 已扩展节点
+            var closed   = new HashSet<(int, int)>();
+
+            // PriorityQueue<元素, 优先级>；优先级越小越先出队
+            var openQueue = new PriorityQueue<(int x, int y), int>();
+
+            var start = (x: startX, y: startY);
+            var end   = (x: endX,   y: endY);
+
+            gScore[start] = 0;
+            openQueue.Enqueue(start, Heuristic(startX, startY, endX, endY));
 
             monitor.Log(
-                $"A* ({sx},{sy})→({ex},{ey})  " +
-                $"起点可走={IsWalkable(sx,sy,loc,mapW,mapH)} 终点可走={IsWalkable(ex,ey,loc,mapW,mapH)}",
+                $"A* 开始: ({startX},{startY})→({endX},{endY})  " +
+                $"起点可走={IsWalkable(startX, startY, loc, mapW, mapH)}  " +
+                $"终点可走={IsWalkable(endX,   endY,   loc, mapW, mapH)}",
                 LogLevel.Info);
 
-            int iter = 0;
-            while (openSet.Count > 0 && iter++ < 1000)
-            {
-                var cur = openSet.Min;
-                openSet.Remove(cur);
-                var pos = (cur.x, cur.y);
+            int maxIter = 2000; // 适当放大，大地图够用
+            int iter    = 0;
 
-                if (pos == (ex, ey))
+            while (openQueue.Count > 0 && iter++ < maxIter)
+            {
+                var cur = openQueue.Dequeue();
+
+                if (closed.Contains(cur)) continue; // 已扩展过（优先队列里可能有重复入队）
+                closed.Add(cur);
+
+                if (cur == end)
                 {
+                    // 回溯路径
                     var path = new Stack<Point>();
-                    var node = pos;
+                    var node = cur;
                     while (cameFrom.ContainsKey(node))
                     {
-                        path.Push(new Point(node.Item1, node.Item2));
+                        path.Push(new Point(node.x, node.y));
                         node = cameFrom[node];
                     }
-                    monitor.Log($"A* 找到路径 {path.Count} 步", LogLevel.Info);
+                    monitor.Log($"A* 找到路径，{path.Count} 步，展开 {iter} 节点", LogLevel.Info);
                     return path;
                 }
 
-                closed.Add(pos);
-                int[][] dirs = { new[]{0,-1}, new[]{0,1}, new[]{-1,0}, new[]{1,0} };
-                foreach (var d in dirs)
-                {
-                    int nx = cur.x + d[0], ny = cur.y + d[1];
-                    var nb = (nx, ny);
-                    if (closed.Contains(nb) || !IsWalkable(nx, ny, loc, mapW, mapH)) continue;
+                int curG = gScore[cur];
 
-                    int tg = gScore[pos] + 1;
-                    if (!gScore.ContainsKey(nb) || tg < gScore[nb])
-                    {
-                        cameFrom[nb] = pos;
-                        gScore[nb]   = tg;
-                        openSet.Add((tg + H(nx,ny,ex,ey), tg, nx, ny));
-                    }
+                // 四方向
+                Span<(int dx, int dy)> dirs = stackalloc (int, int)[]
+                {
+                    (0, -1), (0, 1), (-1, 0), (1, 0)
+                };
+
+                foreach (var (dx, dy) in dirs)
+                {
+                    var nb = (x: cur.x + dx, y: cur.y + dy);
+
+                    if (closed.Contains(nb))                     continue;
+                    if (!IsWalkable(nb.x, nb.y, loc, mapW, mapH)) continue;
+
+                    int tentG = curG + 1;
+                    if (gScore.TryGetValue(nb, out int existing) && tentG >= existing)
+                        continue; // 不是更优路径
+
+                    gScore[nb]   = tentG;
+                    cameFrom[nb] = cur;
+                    int f = tentG + Heuristic(nb.x, nb.y, endX, endY);
+                    openQueue.Enqueue(nb, f); // 允许重复入队，出队时靠 closed 去重
                 }
             }
 
-            monitor.Log($"A* 探索 {iter} 个 tile，无路径", LogLevel.Warn);
+            monitor.Log($"A* 探索 {iter} 个节点后无路径", LogLevel.Warn);
             return null;
         }
 
-        private static int H(int x1, int y1, int x2, int y2)
+        private static int Heuristic(int x1, int y1, int x2, int y2)
             => Math.Abs(x1 - x2) + Math.Abs(y1 - y2);
 
         private static bool IsWalkable(int x, int y, GameLocation loc, int mapW, int mapH)
         {
-            if (x < 0 || y < 0 || x >= mapW || y >= mapH) return false;
+            if (x < 0 || y < 0 || x >= mapW || y >= mapH)
+                return false;
 
-            // 玩家当前 tile 始终可通行（允许从障碍物位置出发）
-            int px = (int)(Game1.player.Position.X / 64f);
-            int py = (int)(Game1.player.Position.Y / 64f);
-            if (x == px && y == py) return true;
+            // 玩家当前所在 tile 始终可通行（允许从障碍物上出发）
+            int playerX = (int)(Game1.player.Position.X / 64f);
+            int playerY = (int)(Game1.player.Position.Y / 64f);
+            if (x == playerX && y == playerY)
+                return true;
 
-            // ✅ 用 isTilePassable 检查 tile 属性（不检查家具碰撞体）
-            return loc.isTilePassable(
-                new xTile.Dimensions.Location(x, y),
-                Game1.viewport
-            );
+            var rect = new Rectangle(x * 64, y * 64, 64, 64);
+            return !loc.isCollidingPosition(rect, Game1.viewport, true, 0, false, Game1.player);
         }
 
-        // ── goal（高层意图执行）────────────────────────────────────────────
-        private static InstructionResult ExecuteGoal(Instruction inst, IMonitor monitor)
+        private static void LogWalkFailureDebug(
+            int curX, int curY, int targetX, int targetY,
+            GameLocation loc, IMonitor monitor)
         {
-            var goal = inst.Text?.ToLower();
-            if (string.IsNullOrEmpty(goal))
-                return new InstructionResult { Success = false, Action = "goal", Error = "缺少目标" };
+            int mapW = loc.Map?.Layers?[0]?.LayerWidth  ?? 50;
+            int mapH = loc.Map?.Layers?[0]?.LayerHeight ?? 50;
 
-            monitor.Log($"[目标] 执行: {goal}", LogLevel.Info);
-
-            var player = Game1.player;
-            var location = player.currentLocation;
-            var locationName = location.Name;
-
-            return goal switch
+            monitor.Log($"walkTo ({targetX},{targetY}) 寻路失败，调试信息：", LogLevel.Warn);
+            for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
             {
-                "go_outside" => ExecuteGoOutside(player, location, locationName, monitor),
-                "go_home" => ExecuteGoHome(player, location, locationName, monitor),
-                "go_to_crops" => ExecuteGoToCrops(player, location, locationName, monitor),
-                "go_to_town" => ExecuteGoToTown(player, location, locationName, monitor),
-                "rest" => ExecuteRest(player, monitor),
-                "wander" => ExecuteWander(player, location, monitor),
-                "stay_inside" => new InstructionResult { Success = true, Action = "goal", Error = "待在室内" },
-                _ => new InstructionResult { Success = false, Action = "goal", Error = $"未知目标: {goal}" }
-            };
+                int tx = targetX + dx, ty = targetY + dy;
+                monitor.Log(
+                    $"  目标周围 tile ({tx},{ty}): " +
+                    $"{(IsWalkable(tx, ty, loc, mapW, mapH) ? "可走" : "不可走")}",
+                    LogLevel.Warn);
+            }
+            for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                int tx = curX + dx, ty = curY + dy;
+                monitor.Log(
+                    $"  起点周围 tile ({tx},{ty}): " +
+                    $"{(IsWalkable(tx, ty, loc, mapW, mapH) ? "可走" : "不可走")}",
+                    LogLevel.Warn);
+            }
         }
 
-        private static InstructionResult ExecuteGoOutside(Farmer player, GameLocation location, string locationName, IMonitor monitor)
-        {
-            // 如果在农舍/小屋，找到门并走出去
-            if (locationName.Contains("House") || locationName.Contains("Cabin"))
-            {
-                // 找到出口（通常是 warp 点）
-                foreach (var warp in location.warps)
-                {
-                    if (warp.TargetName.Contains("Farm") || warp.TargetName.Contains("Outside"))
-                    {
-                        // 走到出口
-                        var path = FindPath(
-                            (int)(player.Position.X / 64f),
-                            (int)(player.Position.Y / 64f),
-                            warp.X, warp.Y,
-                            location, monitor
-                        );
+        // =====================================================================
+        // interact
+        // =====================================================================
 
-                        if (path != null)
-                        {
-                            player.controller = new PathFindController(path, player, location);
-                            player.controller.endBehaviorFunction = (who, loc) =>
-                            {
-                                // 到达出口后触发换图
-                                Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
-                            };
-                            return new InstructionResult { Success = true, Action = "goal" };
-                        }
-                    }
-                }
-                return new InstructionResult { Success = false, Action = "goal", Error = "找不到出口" };
-            }
-
-            // 已经在室外
-            return new InstructionResult { Success = true, Action = "goal" };
-        }
-
-        private static InstructionResult ExecuteGoHome(Farmer player, GameLocation location, string locationName, IMonitor monitor)
-        {
-            // 如果已经在农舍/小屋
-            if (locationName.Contains("House") || locationName.Contains("Cabin"))
-                return new InstructionResult { Success = true, Action = "goal" };
-
-            // 找到农舍的 warp 点
-            foreach (var warp in location.warps)
-            {
-                if (warp.TargetName.Contains("House") || warp.TargetName.Contains("Cabin"))
-                {
-                    var path = FindPath(
-                        (int)(player.Position.X / 64f),
-                        (int)(player.Position.Y / 64f),
-                        warp.X, warp.Y,
-                        location, monitor
-                    );
-
-                    if (path != null)
-                    {
-                        player.controller = new PathFindController(path, player, location);
-                        player.controller.endBehaviorFunction = (who, loc) =>
-                        {
-                            Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
-                        };
-                        return new InstructionResult { Success = true, Action = "goal" };
-                    }
-                }
-            }
-
-            return new InstructionResult { Success = false, Action = "goal", Error = "找不到回家的路" };
-        }
-
-        private static InstructionResult ExecuteGoToCrops(Farmer player, GameLocation location, string locationName, IMonitor monitor)
-        {
-            // 如果在农舍，先出门
-            if (locationName.Contains("House") || locationName.Contains("Cabin"))
-            {
-                var result = ExecuteGoOutside(player, location, locationName, monitor);
-                if (!result.Success) return result;
-            }
-
-            // 走到作物区（农场中心附近）
-            var path = FindPath(
-                (int)(player.Position.X / 64f),
-                (int)(player.Position.Y / 64f),
-                40, 30,  // 作物区中心
-                player.currentLocation, monitor
-            );
-
-            if (path != null)
-            {
-                player.controller = new PathFindController(path, player, player.currentLocation);
-                return new InstructionResult { Success = true, Action = "goal" };
-            }
-
-            return new InstructionResult { Success = false, Action = "goal", Error = "找不到作物区" };
-        }
-
-        private static InstructionResult ExecuteGoToTown(Farmer player, GameLocation location, string locationName, IMonitor monitor)
-        {
-            // 如果在农舍，先出门
-            if (locationName.Contains("House") || locationName.Contains("Cabin"))
-            {
-                var result = ExecuteGoOutside(player, location, locationName, monitor);
-                if (!result.Success) return result;
-            }
-
-            // 找到去镇上的 warp
-            foreach (var warp in player.currentLocation.warps)
-            {
-                if (warp.TargetName.Contains("Town"))
-                {
-                    var path = FindPath(
-                        (int)(player.Position.X / 64f),
-                        (int)(player.Position.Y / 64f),
-                        warp.X, warp.Y,
-                        player.currentLocation, monitor
-                    );
-
-                    if (path != null)
-                    {
-                        player.controller = new PathFindController(path, player, player.currentLocation);
-                        player.controller.endBehaviorFunction = (who, loc) =>
-                        {
-                            Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
-                        };
-                        return new InstructionResult { Success = true, Action = "goal" };
-                    }
-                }
-            }
-
-            return new InstructionResult { Success = false, Action = "goal", Error = "找不到去镇上的路" };
-        }
-
-        private static InstructionResult ExecuteRest(Farmer player, IMonitor monitor)
-        {
-            // 等待一段时间恢复体力
-            return new InstructionResult { Success = true, Action = "goal" };
-        }
-
-        private static InstructionResult ExecuteWander(Farmer player, GameLocation location, IMonitor monitor)
-        {
-            // 随机走动
-            var random = new Random();
-            int targetX = random.Next(10, location.Map.Layers[0].LayerWidth - 10);
-            int targetY = random.Next(10, location.Map.Layers[0].LayerHeight - 10);
-
-            var path = FindPath(
-                (int)(player.Position.X / 64f),
-                (int)(player.Position.Y / 64f),
-                targetX, targetY,
-                location, monitor
-            );
-
-            if (path != null)
-            {
-                player.controller = new PathFindController(path, player, location);
-                return new InstructionResult { Success = true, Action = "goal" };
-            }
-
-            return new InstructionResult { Success = false, Action = "goal", Error = "找不到闲逛目标" };
-        }
-
-        // ── interact ─────────────────────────────────────────────────────
         private static InstructionResult ExecuteInteract(Instruction inst, IMonitor monitor)
         {
             if (inst.X == null || inst.Y == null)
@@ -467,16 +335,19 @@ namespace AICompanion
             if (loc == null)
                 return new InstructionResult { Success = false, Action = "interact", Error = "当前无位置" };
 
-            bool ok = loc.checkAction(
+            bool didAction = loc.checkAction(
                 new xTile.Dimensions.Location(inst.X.Value, inst.Y.Value),
                 Game1.viewport,
                 Game1.player);
 
-            monitor.Log($"interact tile ({inst.X},{inst.Y}): {(ok ? "成功" : "无响应")}", LogLevel.Info);
+            monitor.Log($"interact tile ({inst.X},{inst.Y}): {(didAction ? "成功" : "无响应")}", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "interact" };
         }
 
-        // ── useItem ──────────────────────────────────────────────────────
+        // =====================================================================
+        // useItem
+        // =====================================================================
+
         private static InstructionResult ExecuteUseItem(Instruction inst, IMonitor monitor)
         {
             if (inst.Slot == null)
@@ -491,14 +362,20 @@ namespace AICompanion
                 return new InstructionResult { Success = false, Action = "useItem", Error = $"槽位 {inst.Slot} 为空" };
 
             player.CurrentToolIndex = inst.Slot.Value;
-            player.CurrentTool?.beginUsing(Game1.currentLocation,
-                (int)player.Position.X, (int)player.Position.Y, player);
+            player.CurrentTool?.beginUsing(
+                Game1.currentLocation,
+                (int)player.Position.X,
+                (int)player.Position.Y,
+                player);
 
-            monitor.Log($"useItem 槽 {inst.Slot}: {item.Name}", LogLevel.Info);
+            monitor.Log($"useItem 槽位 {inst.Slot}: {item.Name}", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "useItem" };
         }
 
-        // ── changeItem ───────────────────────────────────────────────────
+        // =====================================================================
+        // changeItem
+        // =====================================================================
+
         private static InstructionResult ExecuteChangeItem(Instruction inst, IMonitor monitor)
         {
             if (inst.Slot == null)
@@ -509,11 +386,16 @@ namespace AICompanion
                 return new InstructionResult { Success = false, Action = "changeItem", Error = $"槽位 {inst.Slot} 超出范围" };
 
             player.CurrentToolIndex = inst.Slot.Value;
-            monitor.Log($"changeItem → 槽 {inst.Slot}: {player.Items[inst.Slot.Value]?.Name ?? "空"}", LogLevel.Info);
+            var item = player.Items[inst.Slot.Value];
+
+            monitor.Log($"changeItem 槽位 {inst.Slot}: {item?.Name ?? "空"}", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "changeItem" };
         }
 
-        // ── talkTo ───────────────────────────────────────────────────────
+        // =====================================================================
+        // talkTo
+        // =====================================================================
+
         private static InstructionResult ExecuteTalkTo(Instruction inst, IMonitor monitor)
         {
             if (string.IsNullOrEmpty(inst.Npc))
@@ -524,48 +406,108 @@ namespace AICompanion
                 return new InstructionResult { Success = false, Action = "talkTo", Error = "当前无位置" };
 
             NPC target = null;
-            foreach (var ch in loc.characters)
+            foreach (var character in loc.characters)
             {
-                if (ch is NPC npc && npc.Name.Equals(inst.Npc, StringComparison.OrdinalIgnoreCase))
-                { target = npc; break; }
+                if (character is NPC npc &&
+                    npc.Name.Equals(inst.Npc, StringComparison.OrdinalIgnoreCase))
+                {
+                    target = npc;
+                    break;
+                }
             }
 
             if (target == null)
-                return new InstructionResult { Success = false, Action = "talkTo", Error = $"NPC '{inst.Npc}' 不在当前地图" };
+                return new InstructionResult
+                {
+                    Success = false,
+                    Action  = "talkTo",
+                    Error   = $"NPC '{inst.Npc}' 不在当前地图"
+                };
 
             target.checkAction(Game1.player, Game1.currentLocation);
             monitor.Log($"talkTo {inst.Npc}", LogLevel.Info);
             return new InstructionResult { Success = true, Action = "talkTo" };
         }
 
-        // ── emote ────────────────────────────────────────────────────────
+        // =====================================================================
+        // emote — 修复映射错误
+        // =====================================================================
+
+        /// <summary>
+        /// 星露谷表情 ID（来自游戏源码 Character.doEmote）：
+        ///  4 = 心形（喜欢）   8 = 省略号（...）  12 = 音符（♪）
+        /// 16 = 晕             20 = 叹号（！）      28 = 红X
+        /// 32 = 怒火           36 = 问号（?）       40 = 惊喜（！+）
+        /// 52 = 睡觉 Zzz       56 = 泪眼            60 = 怒火强
+        ///
+        /// 原版 bug：angry→12(音符)、sad→24(不存在) 已修正。
+        /// </summary>
+        private static readonly Dictionary<string, int> EmoteMap =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["happy"]    = 20,  // 叹号（开心感叹）
+                ["sad"]      = 28,  // 红X（伤心/不满）
+                ["angry"]    = 60,  // 怒火（愤怒）
+                ["love"]     = 4,   // 心形（喜欢）
+                ["surprise"] = 40,  // 惊喜
+                ["sleep"]    = 52,  // Zzz
+                ["note"]     = 12,  // 音符
+                ["question"] = 36,  // 问号
+                ["sweat"]    = 16,  // 晕/汗
+                ["dots"]     = 8,   // 省略号
+                ["cry"]      = 56,  // 泪眼
+            };
+
         private static InstructionResult ExecuteEmote(Instruction inst, IMonitor monitor)
         {
             if (string.IsNullOrEmpty(inst.Text))
                 return new InstructionResult { Success = false, Action = "emote", Error = "缺少表情" };
 
-            var emoteMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            if (int.TryParse(inst.Text, out int emoteId))
             {
-                ["happy"]    = 4,  ["sad"]      = 24, ["angry"]    = 28,
-                ["love"]     = 20, ["surprise"] = 16, ["sleep"]    = 5,
-                ["note"]     = 12, ["question"] = 40, ["shock"]    = 16
-            };
-
-            if (int.TryParse(inst.Text, out int id) ||
-                emoteMap.TryGetValue(inst.Text, out id))
-            {
-                Game1.player.doEmote(id);
-                monitor.Log($"emote: {inst.Text} ({id})", LogLevel.Info);
+                Game1.player.doEmote(emoteId);
+                monitor.Log($"emote ID: {emoteId}", LogLevel.Info);
                 return new InstructionResult { Success = true, Action = "emote" };
             }
 
-            return new InstructionResult { Success = false, Action = "emote", Error = $"未知表情: {inst.Text}" };
+            if (EmoteMap.TryGetValue(inst.Text, out int id))
+            {
+                Game1.player.doEmote(id);
+                monitor.Log($"emote: {inst.Text} → ID {id}", LogLevel.Info);
+                return new InstructionResult { Success = true, Action = "emote" };
+            }
+
+            return new InstructionResult
+            {
+                Success = false,
+                Action  = "emote",
+                Error   = $"未知表情: {inst.Text}（可用: {string.Join(", ", EmoteMap.Keys)}）"
+            };
         }
 
-        // ── wait ─────────────────────────────────────────────────────────
+        // =====================================================================
+        // say
+        // =====================================================================
+
+        private static InstructionResult ExecuteSay(Instruction inst, IMonitor monitor)
+        {
+            if (string.IsNullOrEmpty(inst.Text))
+                return new InstructionResult { Success = false, Action = "say", Error = "缺少文本" };
+
+            Game1.chatBox.addMessage(inst.Text, Microsoft.Xna.Framework.Color.White);
+            monitor.Log($"say: {inst.Text}", LogLevel.Info);
+            return new InstructionResult { Success = true, Action = "say" };
+        }
+
+        // =====================================================================
+        // wait
+        // =====================================================================
+
         private static InstructionResult ExecuteWait(Instruction inst, IMonitor monitor)
         {
-            monitor.Log($"wait {inst.DurationMs ?? 1000}ms", LogLevel.Info);
+            int ms = inst.DurationMs ?? 1000;
+            monitor.Log($"wait {ms}ms", LogLevel.Info);
+            // 实际等待由 ModEntry.waitTicksRemaining 控制
             return new InstructionResult { Success = true, Action = "wait" };
         }
     }
