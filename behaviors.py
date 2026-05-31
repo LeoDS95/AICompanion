@@ -357,6 +357,33 @@ def handle_question(state, persona, player_message):
     return None
 
 
+def companion_ask_for_task(state, persona, player_message="", last_player_message_time=0):
+    """
+    主动问玩家任务
+    
+    逻辑：
+    1. 刚开始游戏（第一次）→ 主动问
+    2. 玩家说「没有/不用/随便」→ AI 自己决定
+    3. 玩家长时间不说话（>5分钟）→ 再问一次
+    4. 玩家还是不说 → AI 自由发挥
+    """
+    current_time = state.get("TimeOfDay", 600)
+    
+    # 玩家说「没有/不用/随便」→ AI 自己决定
+    DECLINE_KEYWORDS = ["没有", "不用", "随便", "你自己玩", "没事", "不用管我"]
+    if player_message and any(kw in player_message for kw in DECLINE_KEYWORDS):
+        return _say("好的，那我自己安排啦~"), None  # 返回 None 让主决策自由发挥
+    
+    # 刚开始游戏（6:00-6:30）→ 主动问
+    if 600 <= current_time <= 630:
+        return _say("主人，今天有什么要我做的吗？"), None
+    
+    # 玩家长时间不说话（通过 last_player_message_time 判断）
+    # 这个逻辑需要在主循环里实现
+    
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 七、主决策函数
 # ══════════════════════════════════════════════════════════════════════════════
@@ -368,13 +395,19 @@ def decide(state, persona, player_message=""):
     决策优先级：
     0. 主人发问 → 攻略检索
     1. 紧急情况（体力枯竭/深夜）→ 处理紧急
-    2. 陪伴行为（问候/关心/庆祝/闲聊）→ 主动互动
-    3. 工作行为（浇水/收获/闲逛）→ 正常干活
+    2. 主动问任务（刚上线/长时间不说话）
+    3. 陪伴行为（问候/关心/庆祝/闲聊）→ 主动互动
+    4. 工作行为（浇水/收获/闲逛）→ 正常干活
     """
     # 0. 主人发问
     if player_message:
         result = handle_question(state, persona, player_message)
         if result: return result
+    
+    # 0.5 玩家说「没有/不用」→ AI 自己决定
+    if player_message:
+        result = companion_ask_for_task(state, persona, player_message)
+        if result and result[0]: return result
     
     t = _time_int(state)
     energy = _energy(state)
