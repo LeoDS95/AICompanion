@@ -145,10 +145,27 @@ namespace AICompanion
 
             configMenu.AddTextOption(
                 mod: ModManifest,
-                getValue: () => Config.Model,
+                getValue: () =>
+                {
+                    // 如果 Model 已被用户手动覆盖，返回覆盖值
+                    // 否则返回提供商的默认模型
+                    if (ModConfig.LLMPresets.TryGetValue(Config.LLMProvider, out var preset))
+                    {
+                        // 如果当前 Model 不在提供商的可选列表中，重置为默认
+                        if (!preset.Models.Contains(Config.Model))
+                            Config.Model = preset.DefaultModel;
+                    }
+                    return Config.Model;
+                },
                 setValue: value => Config.Model = value,
                 name: () => "模型",
-                tooltip: () => "选择使用的模型"
+                tooltip: () =>
+                {
+                    if (ModConfig.LLMPresets.TryGetValue(Config.LLMProvider, out var preset))
+                        return $"可选: {string.Join(", ", preset.Models)}";
+                    return "输入模型名称";
+                },
+                allowedValues: null
             );
 
             configMenu.AddTextOption(
