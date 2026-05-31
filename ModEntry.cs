@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using Microsoft.Xna.Framework;
 using StardewModdingAPI;
@@ -17,6 +18,13 @@ namespace AICompanion
         private ChatWindow _chatWindow;
         private IModHelper _helper;
 
+        // ── 视角切换 ──────────────────────────────────────────────────
+        private bool _isFollowingAI = false;  // 是否正在跟随 AI 视角
+        private Farmer _aiFarmer = null;      // AI 角色引用
+
+        // ── Python 进程 ───────────────────────────────────────────────
+        private Process _pythonProcess = null;
+
         public override void Entry(IModHelper helper)
         {
             _helper = helper;
@@ -27,7 +35,7 @@ namespace AICompanion
 
             GameConfig.Init(gameDir);
 
-            Monitor.Log("=== AI Companion v0.9 ===", LogLevel.Info);
+            Monitor.Log("=== AI Companion v2.2 ===", LogLevel.Info);
             Monitor.Log($"通信目录: {GameConfig.AIDir}", LogLevel.Info);
 
             // ── 初始化字幕窗口 ──────────────────────────────────────────
@@ -38,12 +46,185 @@ namespace AICompanion
             helper.Events.Player.Warped += OnPlayerWarped;
             helper.Events.GameLoop.TimeChanged += OnTimeChanged;
             helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
+            helper.Events.Input.ButtonPressed += OnButtonPressed;
 
             // ★ 关键：在 Entry() 注册，主机和客户端都能收到广播
             helper.Events.Multiplayer.ModMessageReceived += OnMessageReceived;
+
+            // ── 自动启动 Python（仅主机） ────────────────────────────────
+            if (Context.IsMainPlayer)
+            {
+                StartPythonBridge();
+            }
         }
 
-        // ── AI 聊天消息接收端（主机 & 客户端都注册）──────────────────
+        // ══════════════════════════════════════════════════════════════
+        // F5/F6 视角切换
+        // ══════════════════════════════════════════════════════════════
+
+        private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
+        {
+            if (!Context.IsWorldReady) return;
+
+            // F5 → 切换到 AI 视角
+            if (e.Button == SButton.F5)
+            {
+                ToggleAIPerspective();
+                _helper.Input.Suppress(e.Button);
+            }
+
+            // F6 → 切换回主人视角
+            if (e.Button == SButton.F6)
+            {
+                ResetPerspective();
+                _helper.Input.Suppress(e.Button);
+            }
+        }
+
+        private void ToggleAIPerspective()
+        {
+            if (_isFollowingAI)
+            {
+                // 已经在跟随 → 取消
+                ResetPerspective();
+                return;
+            }
+
+            // 找到 AI 角色（非主机玩家）
+            _aiFarmer = FindAIFarmer();
+            if (_aiFarmer == null)
+            {
+                Monitor.Log("[视角] 找不到 AI 角色", LogLevel.Warn);
+                Game1.chatBox?.addMessage("找不到 AI 角色", Color.Red);
+                return;
+            }
+
+            _isFollowingAI = true;
+            Monitor.Log($"[视角] 切换到 AI 视角: {_aiFarmer.Name}", LogLevel.Info);
+            Game1.chatBox?.addMessage($"[视角] 跟随 AI: {_aiFarmer.Name} (按 F6 取消)", Color.Yellow);
+        }
+
+        private void ResetPerspective()
+        {
+            _isFollowingAI = false;
+            _aiFarmer = null;
+            Monitor.Log("[视角] 切换回主人视角", LogLevel.Info);
+            Game1.chatBox?.addMessage("[视角] 已切回主人视角", Color.Yellow);
+        }
+
+        private Farmer FindAIFarmer()
+        {
+            // 找到非主机的玩家
+            foreach (var farmer in Game1.getAllFarmers())
+            {
+                if (!farmer.IsMainPlayer)
+                {
+                    return farmer;
+                }
+            }
+            return null;
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // 自动启动 Python
+        // ══════════════════════════════════════════════════════════════
+
+        private void StartPythonBridge()
+        {
+            try
+            {
+                // 查找 Python 脚本
+                string scriptPath = Path.Combine(GameConfig.AIDir, "..", "AICompanion", "ai_bridge.py");
+                scriptPath = Path.GetFullPath(scriptPath);
+
+                if (!File.Exists(scriptPath))
+                {
+                    Monitor.Log($"[Python] 找不到脚本: {scriptPath}", LogLevel.Warn);
+                    Monitor.Log("[Python] 请手动运行 ai_bridge.py", LogLevel.Warn);
+                    return;
+                }
+
+                // 查找 Python 解释器
+                string pythonExe = FindPython();
+                if (pythonExe == null)
+                {
+                    Monitor.Log("[Python] 找不到 Python 解释器", LogLevel.Warn);
+                    Monitor.Log("[Python] 请手动运行 ai_bridge.py", LogLevel.Warn);
+                    return;
+                }
+
+                // 启动 Python 进程
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = pythonExe,
+                    Arguments = $"-u \"{scriptPath}\"",
+                    WorkingDirectory = Path.GetDirectoryName(scriptPath),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                _pythonProcess = Process.Start(startInfo);
+                Monitor.Log($"[Python] 已启动: {pythonExe} {scriptPath}", LogLevel.Info);
+                Monitor.Log($"[Python] PID: {_pythonProcess.Id}", LogLevel.Info);
+
+                // 读取输出（后台线程）
+                _pythonProcess.OutputDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        Monitor.Log($"[Python] {e.Data}", LogLevel.Debug);
+                };
+                _pythonProcess.ErrorDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        Monitor.Log($"[Python] {e.Data}", LogLevel.Warn);
+                };
+                _pythonProcess.BeginOutputReadLine();
+                _pythonProcess.BeginErrorReadLine();
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[Python] 启动失败: {ex.Message}", LogLevel.Warn);
+            }
+        }
+
+        private string FindPython()
+        {
+            // 尝试常见的 Python 路径
+            string[] candidates = {
+                "python3",
+                "python",
+                "/usr/bin/python3",
+                "/usr/local/bin/python3",
+            };
+
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    var process = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = candidate,
+                        Arguments = "--version",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                    });
+                    process.WaitForExit(3000);
+                    if (process.ExitCode == 0)
+                        return candidate;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // AI 聊天消息接收端
+        // ══════════════════════════════════════════════════════════════
+
         private void OnMessageReceived(object sender, ModMessageReceivedEventArgs e)
         {
             if (e.FromModID != ModManifest.UniqueID) return;
@@ -56,9 +237,9 @@ namespace AICompanion
             string aiName = aiPlayer != null ? aiPlayer.Name : "AI";
 
             // 调试日志
-            Monitor.Log($"[AI聊天] 主机收到: {msg}，chatWindow={_chatWindow != null}", LogLevel.Info);
+            Monitor.Log($"[AI聊天] 主机收到: {msg}", LogLevel.Info);
 
-            // 方案 A：直接写聊天框，不用 _chatWindow
+            // 直接写聊天框
             Game1.chatBox?.addMessage($"{msg}", Color.Cyan);
         }
 
@@ -67,7 +248,6 @@ namespace AICompanion
         {
             if (Context.IsMultiplayer)
             {
-                // ★ 成功方案：SendMessage 广播
                 Helper.Multiplayer.SendMessage(
                     message: text,
                     messageType: MSG_CHAT,
@@ -77,13 +257,15 @@ namespace AICompanion
             }
             else
             {
-                // 单人模式：直接显示
                 _chatWindow?.ShowSubtitle($"AI: {text}");
                 Monitor.Log($"[AI聊天] 单人显示: {text}", LogLevel.Info);
             }
         }
 
-        // ── 主循环 ───────────────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════
+        // 主循环
+        // ══════════════════════════════════════════════════════════════
+
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
             if (!Context.IsWorldReady) return;
@@ -91,23 +273,28 @@ namespace AICompanion
 
             tickCount++;
 
-            // 1. 只有 AI 实例处理指令
+            // ── 1. F5 视角跟随 ──────────────────────────────────────────
+            if (_isFollowingAI && _aiFarmer != null)
+            {
+                // 跟随 AI 角色
+                Game1.viewport.X = (int)_aiFarmer.Position.X - Game1.viewport.Width / 2;
+                Game1.viewport.Y = (int)_aiFarmer.Position.Y - Game1.viewport.Height / 2;
+            }
+
+            // ── 2. AI 实例处理指令 ──────────────────────────────────────
             if (Context.IsMultiplayer && !Context.IsMainPlayer)
             {
                 var instruction = InstructionExecutor.ReadInstruction(Monitor);
                 if (instruction != null)
                 {
-                    // say 指令由 ModEntry 处理
                     if (instruction.Action?.ToLower() == "say")
                     {
                         if (!string.IsNullOrEmpty(instruction.Text))
                             BroadcastChat(instruction.Text);
-                        
                         InstructionExecutor.ConfirmConsumed(Monitor);
                     }
                     else
                     {
-                        // 其他指令正常执行
                         var result = InstructionExecutor.Execute(instruction, Monitor);
                         if (result.Success)
                             InstructionExecutor.ConfirmConsumed(Monitor);
@@ -117,13 +304,13 @@ namespace AICompanion
                 }
             }
 
-            // 2. 每秒检测玩家聊天（两个实例都检测）
+            // ── 3. 每秒检测玩家聊天 ────────────────────────────────────
             if (tickCount % 2 == 0)
             {
                 CheckChatMessages();
             }
 
-            // 3. 每 30 秒打一次日志
+            // ── 4. 每 30 秒打一次日志 ──────────────────────────────────
             if (tickCount % 60 == 0)
             {
                 var state = GameStateReader.Read(Monitor);
@@ -135,7 +322,10 @@ namespace AICompanion
             }
         }
 
-        // ── 检测玩家聊天消息 → 写入 chat.json ─────────────────────────
+        // ══════════════════════════════════════════════════════════════
+        // 聊天检测
+        // ══════════════════════════════════════════════════════════════
+
         private void CheckChatMessages()
         {
             try
@@ -171,7 +361,6 @@ namespace AICompanion
             }
         }
 
-        // ── 写入 chat.json ─────────────────────────────────────────────
         private void WriteChatJson(string sender, string message)
         {
             try
@@ -193,7 +382,6 @@ namespace AICompanion
             }
         }
 
-        // ── 提取聊天文本 ─────────────────────────────────────────────
         private string ExtractChatText(object msg)
         {
             if (msg == null) return null;
@@ -227,6 +415,10 @@ namespace AICompanion
             return null;
         }
 
+        // ══════════════════════════════════════════════════════════════
+        // 其他事件
+        // ══════════════════════════════════════════════════════════════
+
         private void OnPlayerWarped(object sender, WarpedEventArgs e)
         {
             if (!e.IsLocalPlayer) return;
@@ -242,12 +434,30 @@ namespace AICompanion
         private void OnReturnedToTitle(object sender, ReturnedToTitleEventArgs e)
         {
             Monitor.Log("返回标题，清理通信文件", LogLevel.Info);
+            
+            // 停止 Python 进程
+            StopPythonBridge();
+
             try
             {
                 if (File.Exists(GameConfig.StateFile))       File.Delete(GameConfig.StateFile);
                 if (File.Exists(GameConfig.InstructionFile)) File.Delete(GameConfig.InstructionFile);
             }
             catch { }
+        }
+
+        private void StopPythonBridge()
+        {
+            if (_pythonProcess != null && !_pythonProcess.HasExited)
+            {
+                try
+                {
+                    _pythonProcess.Kill();
+                    Monitor.Log("[Python] 已停止", LogLevel.Info);
+                }
+                catch { }
+                _pythonProcess = null;
+            }
         }
     }
 }
