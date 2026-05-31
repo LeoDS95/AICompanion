@@ -1,0 +1,520 @@
+"""
+behaviors.py — 星露谷物语 AI Companion 行为脚本（含陪伴机制）
+================================================================
+职责：读取 state.json + persona.json，输出 (say, action) 决策元组。
+特色：不只是干活机器人，而是会陪伴主人的 AI 伙伴。
+"""
+
+from __future__ import annotations
+import random
+from typing import Any
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 一、游戏机制常量
+# ──────────────────────────────────────────────────────────────────────────────
+
+TIME_SYSTEM = {
+    "day_start": 600,
+    "day_end_soft": 2200,
+    "day_end_warning": 2400,
+    "day_end_hard": 2600,
+    "bedtime_ideal": 2200,
+    "bedtime_no_penalty": 2400,
+}
+
+ENERGY = {
+    "initial_max": 270,
+    "exhausted": 0,
+    "pass_out": -15,
+    "rest_target": 50,
+    "critical_low": 30,
+    "safe_work": 50,
+}
+
+CROPS_CALENDAR = {
+    "spring": ["Strawberry", "Potato", "Cauliflower", "Parsnip"],
+    "summer": ["Blueberry", "Melon", "Tomato", "Hot Pepper"],
+    "fall": ["Cranberries", "Pumpkin", "Yam", "Grape"],
+    "winter": [],
+    "repeating": {
+        "spring": ["Strawberry"],
+        "summer": ["Blueberry"],
+        "fall": ["Cranberries"],
+    },
+}
+
+WEATHER_STRATEGY = {
+    "晴天": {"water": True, "fish": False, "mine": True, "stay_home": False},
+    "雨天": {"water": False, "fish": True, "mine": True, "stay_home": False},
+    "暴风雨": {"water": False, "fish": False, "mine": True, "stay_home": True},
+    "下雪": {"water": False, "fish": False, "mine": True, "stay_home": False},
+    "大风": {"water": True, "fish": False, "mine": True, "stay_home": False},
+}
+
+LOCATIONS = {
+    "farmhouse_door": (48, 7),
+    "mailbox": (68, 16),
+    "shipping_bin": (60, 15),
+    "crop_area_center": (40, 30),
+    "idle_spots": [(35, 25), (50, 20), (42, 35), (60, 28), (30, 18)],
+}
+
+ITEM_SLOTS = {
+    "Axe": 0, "Hoe": 1, "Watering Can": 2,
+    "Pickaxe": 3, "Scythe": 4,
+}
+
+# 节日日历
+FESTIVALS = {
+    "spring": {13: "蛋节", 24: "花舞节"},
+    "summer": {11: "月光水母之夜", 28: "夏季节"},
+    "fall": {16: "星露谷展览会", 27: "万灵节"},
+    "winter": {8: "冰雪节", 25: "冬日星盛宴"},
+}
+
+# NPC 生日
+NPC_BIRTHDAYS = {
+    "spring": {4: "刘易斯", 7: "文森特", 10: "哈维", 14: "潘姆", 18: "谢恩", 20: "皮埃尔", 26: "艾米丽"},
+    "summer": {4: "亚历克斯", 8: "马龙", 10: "德米特里厄斯", 17: "格斯", 22: "威利", 26: "莉亚"},
+    "fall": {2: "潘妮", 5: "艾利克斯", 8: "阿比盖尔", 11: "乔治", 15: "塞巴斯蒂安", 18: "莉亚", 24: "罗宾"},
+    "winter": {1: "罗宾", 3: "科罗布斯", 7: "谢恩", 10: "海莉", 14: "马龙", 17: "艾利奥特", 20: "乔迪", 23: "肯特", 26: "德米特里厄斯"},
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 二、陪伴状态追踪（新增）
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CompanionState:
+    """追踪 AI 的陪伴状态，避免重复行为"""
+    def __init__(self):
+        self.last_greeting_time = 0
+        self.last_comfort_time = 0
+        self.last_celebrate_time = 0
+        self.last_follow_time = 0
+        self.last_chat_time = 0
+        self.player_last_action = None
+        self.consecutive_idle = 0
+        self.mood = "normal"  # normal, happy, worried, tired
+
+# 全局状态实例
+_companion = CompanionState()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 三、辅助函数
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _time_int(state): return state.get("TimeOfDay", 600)
+def _energy(state): return state.get("Energy", 270)
+def _is_morning(state): return 600 <= _time_int(state) < 900
+def _is_noon(state): return 1100 <= _time_int(state) < 1300
+def _is_evening(state): return 1800 <= _time_int(state) < 2100
+def _is_night(state): return _time_int(state) >= 2200
+def _is_exhausted(state): return _energy(state) <= ENERGY["exhausted"]
+def _is_low_energy(state): return _energy(state) < ENERGY["critical_low"]
+def _should_rest(state): return _energy(state) < ENERGY["rest_target"]
+def _weather(state): return state.get("Weather", "晴天")
+def _season(state): return state.get("Season", "spring")
+def _day(state): return state.get("Day", 1)
+def _location(state): return state.get("LocationName", "Farm")
+def _time_str(state): return state.get("TimeString", "00:00")
+
+def _say(text): return {"Action": "say", "Text": text}
+def _walk(x, y): return {"Action": "walkTo", "X": x, "Y": y}
+def _wait(ms=1000): return {"Action": "wait", "DurationMs": ms}
+def _emote(text): return {"Action": "emote", "Text": text}
+def _interact(x, y): return {"Action": "interact", "X": x, "Y": y}
+def _use_item(slot): return {"Action": "useItem", "Slot": slot}
+def _change_item(slot): return {"Action": "changeItem", "Slot": slot}
+
+def _dist(state, x, y):
+    sx, sy = state.get("PlayerX", 0), state.get("PlayerY", 0)
+    return abs(sx - x) + abs(sy - y)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 四、陪伴行为（核心新增）
+# ──────────────────────────────────────────────────────────────────────────────
+
+def companion_follow_player(state, persona):
+    """跟随主人：走到主人附近"""
+    # 获取主人位置（从 state 里的 HostPlayer 字段，或用默认）
+    host_x = state.get("HostPlayerX", state.get("PlayerX", 48))
+    host_y = state.get("HostPlayerY", state.get("PlayerY", 7))
+    
+    cur_x = state.get("PlayerX", 0)
+    cur_y = state.get("PlayerY", 0)
+    dist = abs(cur_x - host_x) + abs(cur_y - host_y)
+    
+    # 距离太远就走近一点
+    if dist > 10:
+        # 走到主人附近（不完全重叠）
+        offset_x = random.randint(-3, 3)
+        offset_y = random.randint(-3, 3)
+        target_x = max(0, host_x + offset_x)
+        target_y = max(0, host_y + offset_y)
+        return _say("跟着你~"), _walk(target_x, target_y)
+    
+    return None, None  # 距离够近，不需要移动
+
+
+def companion_greeting(state, persona):
+    """主动打招呼（早上/中午/晚上）"""
+    t = _time_int(state)
+    style = persona.get("style", "friendly")
+    
+    # 早上打招呼
+    if _is_morning(state) and _companion.last_greeting_time < 600:
+        _companion.last_greeting_time = t
+        greetings = {
+            "friendly": ["早安！今天也要加油哦~", "早上好！新的一天开始啦~"],
+            "lazy": ["哈欠…早安…", "嗯…天亮了啊…"],
+            "diligent": ["早安！今天计划好了，开工！", "早上好！任务清单已就绪！"],
+            "cheerful": ["早安啊！！今天超期待的！", "耶！新的一天！"],
+        }
+        return _say(random.choice(greetings.get(style, greetings["friendly"])))
+    
+    # 中午问候
+    if _is_noon(state) and _companion.last_greeting_time < 1100:
+        _companion.last_greeting_time = t
+        return _say("中午了，该吃饭了吧？")
+    
+    # 晚上提醒
+    if _is_evening(state) and _companion.last_greeting_time < 1800:
+        _companion.last_greeting_time = t
+        return _say("天快黑了，还有啥要做的吗？")
+    
+    return None
+
+
+def companion_comfort(state, persona):
+    """关心主人（低体力/晚睡/受伤）"""
+    energy = _energy(state)
+    hour = _time_int(state)
+    
+    # 主人低体力
+    if energy < 50 and _companion.last_comfort_time < hour - 100:
+        _companion.last_comfort_time = hour
+        comforts = [
+            f"体力只剩 {energy} 了，休息一下吧？",
+            "别太拼了，身体要紧~",
+            "要不要吃点东西恢复体力？",
+        ]
+        return _say(random.choice(comforts))
+    
+    # 主人熬夜
+    if hour >= 2300 and _companion.last_comfort_time < 2300:
+        _companion.last_comfort_time = hour
+        return _say("都这么晚了，早点睡吧~明天再继续。")
+    
+    # 主人受伤
+    if state.get("Health", 100) < 50 and _companion.last_comfort_time < hour:
+        _companion.last_comfort_time = hour
+        return _say("你受伤了！小心点啊~")
+    
+    return None
+
+
+def companion_celebrate(state, persona):
+    """庆祝成就（升级/赚钱/收获）"""
+    gold = state.get("Gold", 0)
+    hour = _time_int(state)
+    
+    # 赚钱庆祝（每 1000 金）
+    if gold > 0 and gold % 1000 < 50 and _companion.last_celebrate_time < hour:
+        _companion.last_celebrate_time = hour
+        celebrations = [
+            f"哇，已经攒了 {gold} 金币了！",
+            "越来越有钱了呢~",
+            "继续加油！财富自由指日可待！",
+        ]
+        return _say(random.choice(celebrations))
+    
+    return None
+
+
+def companion_chat(state, persona):
+    """随机闲聊（根据环境）"""
+    hour = _time_int(state)
+    if _companion.last_chat_time > hour - 200:
+        return None  # 太频繁了
+    
+    weather = _weather(state)
+    season = _season(state)
+    day = _day(state)
+    
+    chats = []
+    
+    # 天气相关
+    if weather == "晴天":
+        chats.append("今天天气真好~")
+    elif weather == "雨天":
+        chats.append("下雨了，空气好清新~")
+    elif weather == "暴风雨":
+        chats.append("暴风雨好可怕…待在家里吧。")
+    
+    # 季节相关
+    if season == "spring" and day == 1:
+        chats.append("春天来了！新的开始~")
+    elif season == "summer" and day == 1:
+        chats.append("夏天到了，热起来了~")
+    elif season == "fall" and day == 1:
+        chats.append("秋天，收获的季节！")
+    elif season == "winter" and day == 1:
+        chats.append("冬天来了，外面好冷…")
+    
+    # 随机感慨
+    chats.extend([
+        f"现在是{_time_str(state)}，时间过得真快~",
+        "农场的生活真惬意~",
+        "有你一起玩真好~",
+        "今天想做什么呢？",
+    ])
+    
+    if chats:
+        _companion.last_chat_time = hour
+        return _say(random.choice(chats))
+    
+    return None
+
+
+def companion_react_to_action(state, persona, player_action):
+    """对主人的行为做出反应"""
+    if player_action == _companion.player_last_action:
+        return None  # 同一个动作，不重复反应
+    
+    _companion.player_last_action = player_action
+    
+    reactions = {
+        "watering": ["辛苦了~我来帮你！", "浇水浇得真好~"],
+        "fishing": ["钓到什么了吗？", "钓鱼好有趣~"],
+        "mining": ["矿洞里小心点！", "挖到宝石了吗？"],
+        "sleeping": ["晚安~明天见！", "好好休息~"],
+        "walking": ["去哪呀？我跟着你~", "等等我~"],
+    }
+    
+    if player_action in reactions:
+        return _say(random.choice(reactions[player_action]))
+    
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 五、工作行为（原有）
+# ──────────────────────────────────────────────────────────────────────────────
+
+def morning_routine(state, persona):
+    """早起流程"""
+    style = persona.get("style", "friendly")
+    greetings = {
+        "friendly": ["早安！今天也要加油哦~", "早上好！新的一天~"],
+        "lazy": ["哈欠…早安…", "嗯…天亮了…"],
+        "diligent": ["早安！开工！", "早上好！任务清单就绪！"],
+        "cheerful": ["早安啊！！", "耶！新的一天！"],
+    }
+    greeting = random.choice(greetings.get(style, greetings["friendly"]))
+    weather = _weather(state)
+    season = _season(state)
+    day = _day(state)
+    
+    say_text = f"{greeting} {season}第{day}天，今天{weather}。"
+    mx, my = LOCATIONS["mailbox"]
+    return _say(say_text), _walk(mx, my)
+
+
+def water_crops(state, persona):
+    """浇水"""
+    if _weather(state) == "雨天":
+        return _say("下雨了，不用浇水~"), _emote("happy")
+    if _is_low_energy(state):
+        return rest_when_tired(state, persona)
+    
+    cx, cy = LOCATIONS["crop_area_center"]
+    if _dist(state, cx, cy) > 25:
+        return _say("去浇水~"), _walk(cx, cy)
+    return _say("开始浇水~"), _change_item(ITEM_SLOTS["Watering Can"])
+
+
+def harvest_crops(state, persona):
+    """收获"""
+    if _is_low_energy(state):
+        return rest_when_tired(state, persona)
+    
+    cx, cy = LOCATIONS["crop_area_center"]
+    if _dist(state, cx, cy) > 25:
+        return _say("去收获~"), _walk(cx, cy)
+    return _say("收获时间~"), _change_item(ITEM_SLOTS["Scythe"])
+
+
+def go_home_sleep(state, persona):
+    """回家睡觉"""
+    hx, hy = LOCATIONS["farmhouse_door"]
+    time_str = _time_str(state)
+    
+    if _dist(state, hx, hy) > 15:
+        return _say("回家睡觉~"), _walk(hx, hy)
+    return _say(f"{time_str}了，晚安~"), _interact(hx, hy)
+
+
+def rest_when_tired(state, persona):
+    """休息"""
+    energy = _energy(state)
+    if _is_exhausted(state):
+        hx, hy = LOCATIONS["farmhouse_door"]
+        return _say("体力没了！赶紧回家！"), _walk(hx, hy)
+    return _say(f"累了…体力只剩{energy}，休息一下。"), _wait(3000)
+
+
+def weather_response(state, persona):
+    """天气响应"""
+    weather = _weather(state)
+    if weather == "暴风雨":
+        return _say("暴风雨！待在家里！"), _emote("scared")
+    elif weather == "雨天":
+        return _say("下雨了，去钓鱼吧~"), _emote("happy")
+    return _say(f"今天{weather}，继续干活！"), _emote("happy")
+
+
+def idle_behavior(state, persona):
+    """闲逛"""
+    spot = random.choice(LOCATIONS["idle_spots"])
+    musings = [
+        "四处走走~",
+        "农场风景真不错~",
+        "没啥事，随便逛逛。",
+        "嗯…明天做什么呢？",
+    ]
+    return _say(random.choice(musings)), _walk(spot[0], spot[1])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 六、主决策函数（整合陪伴 + 工作）
+# ──────────────────────────────────────────────────────────────────────────────
+
+def decide(state, persona):
+    """
+    主决策入口。
+    
+    决策优先级：
+    1. 紧急情况（体力枯竭/深夜）→ 处理紧急
+    2. 陪伴行为（问候/关心/庆祝/聊天）→ 主动互动
+    3. 工作行为（浇水/收获/闲逛）→ 正常干活
+    """
+    time_now = _time_int(state)
+    energy = _energy(state)
+    location = _location(state)
+    
+    # ── 紧急情况 ────────────────────────────────────────────────────────
+    if _is_exhausted(state):
+        return rest_when_tired(state, persona)
+    
+    if time_now >= 2400:
+        return go_home_sleep(state, persona)
+    
+    if time_now >= 2200:
+        return go_home_sleep(state, persona)
+    
+    if _should_rest(state):
+        return rest_when_tired(state, persona)
+    
+    # ── 陪伴行为（30% 概率触发，避免太频繁）────────────────────────────
+    if random.random() < 0.3:
+        # 优先级：关心 > 打招呼 > 庆祝 > 闲聊
+        result = companion_comfort(state, persona)
+        if result: return result
+        
+        result = companion_greeting(state, persona)
+        if result: return result
+        
+        result = companion_celebrate(state, persona)
+        if result: return result
+        
+        result = companion_chat(state, persona)
+        if result: return result
+    
+    # ── 跟随主人（如果距离远）──────────────────────────────────────────
+    if random.random() < 0.2:
+        result = companion_follow_player(state, persona)
+        if result[0]: return result
+    
+    # ── 工作行为 ────────────────────────────────────────────────────────
+    if _is_morning(state):
+        return morning_routine(state, persona)
+    
+    weather = _weather(state)
+    if weather == "暴风雨" and location == "Farm":
+        return weather_response(state, persona)
+    
+    if weather == "雨天" and random.random() < 0.5:
+        return weather_response(state, persona)
+    
+    # 浇水
+    if location == "Farm" and time_now < 1600:
+        if random.random() < 0.4:
+            return water_crops(state, persona)
+    
+    # 收获
+    if location == "Farm" and time_now < 1800:
+        if random.random() < 0.3:
+            return harvest_crops(state, persona)
+    
+    # ── 默认：闲逛 ──────────────────────────────────────────────────────
+    return idle_behavior(state, persona)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 七、测试
+# ──────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import json
+    
+    test_states = [
+        {"name": "🌅 春季早晨", "state": {
+            "PlayerName": "小艾", "PlayerX": 576, "PlayerY": 608,
+            "Energy": 270, "MaxEnergy": 270, "Gold": 500,
+            "LocationName": "Farm", "Season": "spring", "Day": 3,
+            "TimeOfDay": 800, "TimeString": "08:00", "Weather": "晴天",
+            "Health": 100, "MaxHealth": 100,
+            "InventorySummary": "Axex1, Hoex1, Watering Canx1, Pickaxex1, Scythex1",
+        }},
+        {"name": "🌧 下雨天", "state": {
+            "PlayerName": "小艾", "PlayerX": 480, "PlayerY": 512,
+            "Energy": 180, "MaxEnergy": 270, "Gold": 1200,
+            "LocationName": "Farm", "Season": "summer", "Day": 7,
+            "TimeOfDay": 1400, "TimeString": "14:00", "Weather": "雨天",
+            "Health": 100, "MaxHealth": 100,
+            "InventorySummary": "Axex1, Hoex1, Watering Canx1, Pickaxex1, Scythex1",
+        }},
+        {"name": "😰 体力低", "state": {
+            "PlayerName": "小艾", "PlayerX": 400, "PlayerY": 450,
+            "Energy": 12, "MaxEnergy": 270, "Gold": 750,
+            "LocationName": "Farm", "Season": "fall", "Day": 15,
+            "TimeOfDay": 1600, "TimeString": "16:00", "Weather": "晴天",
+            "Health": 100, "MaxHealth": 100,
+            "InventorySummary": "Axex1, Hoex1, Watering Canx1, Pickaxex1, Scythex1",
+        }},
+        {"name": "🌙 深夜", "state": {
+            "PlayerName": "小艾", "PlayerX": 350, "PlayerY": 420,
+            "Energy": 90, "MaxEnergy": 270, "Gold": 2000,
+            "LocationName": "Farm", "Season": "spring", "Day": 20,
+            "TimeOfDay": 2200, "TimeString": "22:00", "Weather": "晴天",
+            "Health": 100, "MaxHealth": 100,
+            "InventorySummary": "Axex1, Hoex1, Watering Canx1, Pickaxex1, Scythex1",
+        }},
+    ]
+    
+    persona = {"name": "活泼型", "style": "cheerful", "favorite": "exploring"}
+    
+    print("=" * 60)
+    print(" AI Companion 行为测试（含陪伴机制）")
+    print("=" * 60)
+    
+    for test in test_states:
+        state = test["state"]
+        say, action = decide(state, persona)
+        print(f"\n📋 {test['name']}")
+        print(f"   💬 {say['Text']}")
+        print(f"   🎮 {json.dumps(action, ensure_ascii=False)}")
+    
+    print("\n" + "=" * 60)
+    print(" 测试完成！")
+    print("=" * 60)
