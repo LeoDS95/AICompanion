@@ -112,19 +112,19 @@ class SimpleAI:
         if energy < 30:
             return {"Action": "say", "Text": "好累...休息一下"}, {"Action": "wait", "DurationMs": 5000}
 
-        # 2. 深夜 → 回农舍/小屋
+        # 2. 深夜 → 说要睡觉（不传送，走回去）
         if hour >= 23 or hour < 6:
             if location not in ["FarmHouse", "Cabin"]:
-                return {"Action": "say", "Text": "该睡觉了~"}, {"Action": "warpTo", "Npc": "FarmHouse", "X": 9, "Y": 9}
+                # 走到农场入口（大约位置）
+                return {"Action": "say", "Text": "该睡觉了，回去~"}, {"Action": "walkTo", "X": 48, "Y": 7}
             return {"Action": "say", "Text": "晚安~"}, {"Action": "wait", "DurationMs": 10000}
 
-        # 3. 在小屋/农舍 → 出门去农场
+        # 3. 在小屋/农舍 → 走出去
         if location in ["FarmHouse", "Cabin"]:
-            return {"Action": "say", "Text": "早安！开工~"}, {"Action": "warpTo", "Npc": "Farm", "X": 48, "Y": 7}
+            return {"Action": "say", "Text": "早安！开工~"}, {"Action": "walkTo", "X": 48, "Y": 7}
 
-        # 4. 在农场 → 随机走动测试
+        # 4. 在农场 → 随机走动
         if location == "Farm":
-            # 随机选一个目标走动
             targets = [
                 (48, 15, "去田里看看"),
                 (35, 20, "去果树那边"),

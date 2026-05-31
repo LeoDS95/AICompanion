@@ -1,6 +1,6 @@
 # AI Companion — 星露谷物语 AI 玩伴 Mod
 
-> 最后更新：2026-05-31 17:21 GMT+8
+> 最后更新：2026-05-31 17:43 GMT+8
 > 游戏路径：`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley`
 > GitHub：https://github.com/LeoDS95/AICompanion
 
@@ -37,17 +37,14 @@
 | Python 监听器 | ✅ | Python 读取玩家消息并打印 |
 | AI 回话（本地） | ✅ | AI 能在自己的游戏实例里说话 |
 | AI 控制角色移动 | ✅ | AI 可控制第二角色移动、传送 |
-| 跨实例通信（SendMessage） | ✅ | SMAPI ModMessage 通信链路打通 |
+| **跨实例聊天显示** | ✅ | **AI 回复显示在主机聊天框** |
 
 ---
 
-## 三、核心问题 ❌
+## 三、跨实例聊天方案（成功！）
 
-### 跨实例聊天显示（未解决）
+### 最终方案（Claude 方案 A）
 
-**目标**：AI 回复的消息显示在**主机**的游戏画面上。
-
-**成功过的方案**：
 ```csharp
 // AI 实例发送
 Helper.Multiplayer.SendMessage(
@@ -59,82 +56,55 @@ Helper.Multiplayer.SendMessage(
 // 主机接收（ModMessageReceived 事件在主线程触发）
 private void OnMessageReceived(object sender, ModMessageReceivedEventArgs e)
 {
-    _chatWindow?.ShowSubtitle($"AI: {msg}");
+    if (e.FromModID != ModManifest.UniqueID) return;
+    if (e.Type != "AIChat") return;
+
+    var msg = e.ReadAs<string>();
+
+    // 调试日志
+    Monitor.Log($"[AI聊天] 主机收到: {msg}，chatWindow={_chatWindow != null}", LogLevel.Info);
+
+    // 直接写聊天框，不用自定义窗口
+    Game1.chatBox?.addMessage($"[AI] {msg}", Color.Cyan);
 }
 ```
 
-**成功时的现象**：
-- 日志显示 `[AI聊天] 字幕显示: 2: 嘿~ 主人！我在呢！`
-- 主人确认看到了字幕（但字太小）
+### 关键修复
 
-**失败原因**：
-- 改字幕位置/大小时，不小心把通信机制从 SendMessage 改成了文件读取
-- 文件读取可能在后台线程，导致 UI 更新被游戏静默忽略
+1. **只有 AI 实例处理指令**（主机不处理 instruction.json）
+2. **用 `Game1.chatBox?.addMessage()`**（不用自定义 ChatWindow）
+3. **SendMessage 通信链路**（ModMessageReceived 在主线程触发，UI 更新安全）
 
-**目前状态**：
-- SendMessage 通信链路已恢复
-- 日志显示字幕在 AI 实例上显示，不是主机
-- 主机日志显示 `[AI聊天] 广播` 但没有 `[AI聊天] 字幕显示`
-
----
-
-## 四、已测试的方案
+### 已测试的失败方案
 
 | 方案 | 结果 | 原因 |
 |------|------|------|
 | `Game1.chatBox.addMessage()` | ❌ 只在本地显示 | 不走多人网络 |
-| `Helper.Multiplayer.SendMessage()` | ⚠️ 成功过一次 | 后来改代码时搞坏了 |
 | `sendChatMessage(LanguageCode, String, Int64)` | ❌ 广播成功但不显示 | 可能只在主机端有效 |
 | 写 reply.json + 主机读取 | ❌ 主机不显示 | 文件读取在后台线程，UI 更新被忽略 |
 | 自建 UI 窗口（T 键） | ❌ 输入没反应 | 键盘输入处理有问题 |
-| 字幕显示（工具栏上方） | ⚠️ 在 AI 实例显示 | 主机收不到消息 |
+| `_chatWindow?.ShowSubtitle()` | ❌ 主机不显示 | `_chatWindow` 可能为 null |
+
+### 技术要点
+
+- **UI 线程安全**：`ModMessageReceived` 在主线程触发，文件读取可能在后台线程
+- **SendMessage 只要 modID 和 messageType 匹配就行**，版本不影响
+- **两端 Mod 版本不需要完全一致**
 
 ---
 
-## 五、关键技术要点
+## 四、待完成
 
-### 1. UI 线程安全
-
-**关键洞察**（来自 Gemini）：
-- `ModMessageReceived` 事件在**主线程**触发 → UI 更新安全
-- 文件读取（FileSystemWatcher、Task.Run）在**后台线程** → UI 更新被游戏静默忽略
-
-### 2. 跨实例通信
-
-**正确方案**：
-```csharp
-// 发送端（AI 实例）
-Helper.Multiplayer.SendMessage(message, "AIChat", modIDs: new[] { ModManifest.UniqueID });
-
-// 接收端（主机，主线程）
-Helper.Events.Multiplayer.ModMessageReceived += OnMessageReceived;
-```
-
-**注意**：
-- `ModMessageReceived` 在 SMAPI 4.x 中是正确的事件名
-- 事件在 Entry() 中注册，两端都能收到
-
-### 3. 自建 UI 键盘输入
-
-**问题**：自建 UI 窗口收不到键盘输入
-
-**解决方案**（来自 Gemini）：
-```csharp
-// 设置键盘焦点
-Game1.keyboardDispatcher.Subscriber = this.chatBox;
-
-// 关闭时释放
-public override void cleanupBeforeExit()
-{
-    if (Game1.keyboardDispatcher.Subscriber == this.chatBox)
-        Game1.keyboardDispatcher.Subscriber = null;
-    base.cleanupBeforeExit();
-}
-```
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| 1 | 修 warpTo bug | InstructionExecutor 里没实现 |
+| 2 | 修表情 ID | happy=4, note=12, angry=28 |
+| 3 | SimpleAI 基准测试 | 跑完整 Farm 日常循环 |
+| 4 | 接 LLM | 用 OpenClaw 或其他大模型 |
 
 ---
 
-## 六、文件结构
+## 五、文件结构
 
 ```
 AICompanion/                    # 源码目录
@@ -144,7 +114,7 @@ AICompanion/                    # 源码目录
 ├── GameConfig.cs               # 通信路径配置
 ├── GameStateReader.cs          # 读取游戏状态
 ├── InstructionExecutor.cs      # 执行指令
-├── ChatWindow.cs               # 字幕显示窗口
+├── ChatWindow.cs               # 字幕显示窗口（备用）
 ├── ChatBroadcaster.cs          # 聊天广播器（备用）
 ├── chat_listener.py            # Python 监听器
 └── ai_bridge.py                # Python 控制脚本（待完善）
@@ -162,30 +132,7 @@ AICompanion/                    # 源码目录
 
 ---
 
-## 七、下一步
-
-### 优先级 1：修复跨实例聊天显示
-
-**需要解决**：
-- 为什么 SendMessage 在 AI 实例触发了 ModMessageReceived，但主机没有？
-- 可能原因：主机的 Mod 没有正确注册事件，或者消息没有广播到主机
-
-**调试方向**：
-- 在主机的 Entry() 中加日志，确认事件注册成功
-- 在 OnMessageReceived 中加日志，确认主机是否收到消息
-- 检查 ModManifest.UniqueID 是否一致
-
-### 优先级 2：LLM 集成
-
-**目标**：玩家说话 → AI 理解 → 自主决策
-
-### 优先级 3：动作执行
-
-**目标**：AI 能执行浇水、挖矿、砍树、钓鱼等动作
-
----
-
-## 八、里程碑
+## 六、里程碑
 
 | 日期 | 里程碑 | 状态 |
 |------|--------|------|
@@ -197,6 +144,7 @@ AICompanion/                    # 源码目录
 | 2026-05-31 | 聊天检测 | ✅ |
 | 2026-05-31 | Python 监听器 | ✅ |
 | 2026-05-31 | SendMessage 通信链路 | ✅ |
-| 2026-05-31 | 跨实例聊天显示 | ❌ 待解决 |
-| TBD | LLM 集成 | ❌ 待开发 |
-| TBD | 动作执行 | ❌ 待开发 |
+| 2026-05-31 | **跨实例聊天显示** | ✅ |
+| TBD | warpTo + 表情 ID 修复 | ❌ |
+| TBD | SimpleAI 基准测试 | ❌ |
+| TBD | LLM 集成 | ❌ |

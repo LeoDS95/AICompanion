@@ -55,9 +55,11 @@ namespace AICompanion
             var aiPlayer = Game1.getFarmerMaybeOffline(e.FromPlayerID);
             string aiName = aiPlayer != null ? aiPlayer.Name : "AI";
 
-            // ★ 成功方案：在主线程显示字幕
-            _chatWindow?.ShowSubtitle($"{aiName}: {msg}");
-            Monitor.Log($"[AI聊天] 字幕显示: {aiName}: {msg}", LogLevel.Info);
+            // 调试日志
+            Monitor.Log($"[AI聊天] 主机收到: {msg}，chatWindow={_chatWindow != null}", LogLevel.Info);
+
+            // 方案 A：直接写聊天框，不用 _chatWindow
+            Game1.chatBox?.addMessage($"{msg}", Color.Cyan);
         }
 
         // ── 发送聊天消息（AI 实例调用）────────────────────────────────
@@ -89,30 +91,33 @@ namespace AICompanion
 
             tickCount++;
 
-            // 1. 读取并执行指令（say 指令广播给所有人）
-            var instruction = InstructionExecutor.ReadInstruction(Monitor);
-            if (instruction != null)
+            // 1. 只有 AI 实例处理指令
+            if (Context.IsMultiplayer && !Context.IsMainPlayer)
             {
-                // say 指令由 ModEntry 处理
-                if (instruction.Action?.ToLower() == "say")
+                var instruction = InstructionExecutor.ReadInstruction(Monitor);
+                if (instruction != null)
                 {
-                    if (!string.IsNullOrEmpty(instruction.Text))
-                        BroadcastChat(instruction.Text);
-                    
-                    InstructionExecutor.ConfirmConsumed(Monitor);
-                }
-                else
-                {
-                    // 其他指令正常执行
-                    var result = InstructionExecutor.Execute(instruction, Monitor);
-                    if (result.Success)
+                    // say 指令由 ModEntry 处理
+                    if (instruction.Action?.ToLower() == "say")
+                    {
+                        if (!string.IsNullOrEmpty(instruction.Text))
+                            BroadcastChat(instruction.Text);
+                        
                         InstructionExecutor.ConfirmConsumed(Monitor);
+                    }
                     else
-                        Monitor.Log($"指令 [{instruction.Action}] 失败: {result.Error}", LogLevel.Warn);
+                    {
+                        // 其他指令正常执行
+                        var result = InstructionExecutor.Execute(instruction, Monitor);
+                        if (result.Success)
+                            InstructionExecutor.ConfirmConsumed(Monitor);
+                        else
+                            Monitor.Log($"指令 [{instruction.Action}] 失败: {result.Error}", LogLevel.Warn);
+                    }
                 }
             }
 
-            // 2. 每秒检测玩家聊天
+            // 2. 每秒检测玩家聊天（两个实例都检测）
             if (tickCount % 2 == 0)
             {
                 CheckChatMessages();
