@@ -590,30 +590,49 @@ namespace AICompanion
             try
             {
                 var chatBox = Game1.chatBox;
-                if (chatBox == null) return;
+                if (chatBox == null)
+                {
+                    Monitor.Log("[调试] chatBox 为 null", LogLevel.Debug);
+                    return;
+                }
 
                 var messagesField = chatBox.GetType().GetField("messages",
                     System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (messagesField?.GetValue(chatBox) is System.Collections.IList messages)
+                
+                if (messagesField == null)
                 {
-                    int currentCount = messages.Count;
-                    if (currentCount > _lastChatCount)
-                    {
-                        for (int i = _lastChatCount; i < currentCount; i++)
-                        {
-                            var msg = messages[i];
-                            string messageText = ExtractChatText(msg);
+                    Monitor.Log("[调试] messages 字段不存在", LogLevel.Debug);
+                    return;
+                }
+                
+                var messages = messagesField.GetValue(chatBox) as System.Collections.IList;
+                if (messages == null)
+                {
+                    Monitor.Log("[调试] messages 为 null", LogLevel.Debug);
+                    return;
+                }
 
-                            if (!string.IsNullOrEmpty(messageText))
-                            {
-                                Monitor.Log($"[聊天] {messageText}", LogLevel.Info);
-                                Monitor.Log($"[调试] 准备写入 chat.json", LogLevel.Debug);
-                                WriteChatJson("主人", messageText);
-                                Monitor.Log($"[调试] chat.json 写入完成", LogLevel.Debug);
-                            }
+                int currentCount = messages.Count;
+                
+                if (currentCount != _lastChatCount)
+                {
+                    Monitor.Log($"[调试] 消息数变化: {_lastChatCount} -> {currentCount}", LogLevel.Debug);
+                }
+
+                if (currentCount > _lastChatCount)
+                {
+                    for (int i = _lastChatCount; i < currentCount; i++)
+                    {
+                        var msg = messages[i];
+                        string messageText = ExtractChatText(msg);
+
+                        if (!string.IsNullOrEmpty(messageText))
+                        {
+                            Monitor.Log($"[聊天] {messageText}", LogLevel.Info);
+                            WriteChatJson("主人", messageText);
                         }
-                        _lastChatCount = currentCount;
                     }
+                    _lastChatCount = currentCount;
                 }
             }
             catch (Exception ex)
