@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text.Json;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -23,6 +24,9 @@ namespace AICompanion
 
             Monitor.Log("=== AI Companion v0.5 ===", LogLevel.Info);
             Monitor.Log($"通信目录: {GameConfig.AIDir}", LogLevel.Info);
+
+            // 初始化聊天广播器
+            ChatBroadcaster.Init(Monitor);
 
             // 等待游戏加载后再判断模式
             helper.Events.GameLoop.GameLaunched += OnGameLaunched;
@@ -89,6 +93,9 @@ namespace AICompanion
                 Monitor.Log("[模式] AI 实例 - 加入者模式", LogLevel.Info);
                 Monitor.Log("[AI] 等待游戏加载完成后自动开始控制", LogLevel.Info);
 
+                // 诊断：打印 Multiplayer 方法签名
+                ChatBroadcaster.Diagnose();
+
                 _helper.Events.GameLoop.UpdateTicked += OnAITick;
                 _helper.Events.Player.Warped += OnPlayerWarped;
                 _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
@@ -97,12 +104,12 @@ namespace AICompanion
             {
                 // === 主机模式：主人手动控制 ===
                 Monitor.Log("[模式] 主机/单人模式 - 主人手动控制", LogLevel.Info);
-                Monitor.Log("[主机] Mod 不干预，主人自由游戏", LogLevel.Info);
+                Monitor.Log("[主机] 激活聊天接收功能", LogLevel.Info);
 
-                // 主机不写状态文件，避免覆盖 AI 的状态
+                // 主机激活：读取 AI 回复并显示
+                _helper.Events.GameLoop.UpdateTicked += OnHostTick;
                 _helper.Events.Player.Warped += OnPlayerWarped;
                 _helper.Events.GameLoop.TimeChanged += OnTimeChanged;
-                _helper.Events.Multiplayer.ModMessageReceived += OnModMessageReceived;
                 _helper.Events.GameLoop.ReturnedToTitle += OnReturnedToTitle;
             }
         }
@@ -183,42 +190,49 @@ namespace AICompanion
         // ==================== 主机模式 ====================
         // 只写状态，不执行指令（主人手动控制）
 
-        private long _lastMessageTimestamp = 0;
+        private long _lastReplyTimestamp = 0;
 
-        private void OnHostTick(object sender, UpdateTickedEventArgs e)
+        private void OnHostTick  // 主机每0.5秒检查reply.json(object sender, UpdateTickedEventArgs e)
         {
             if (!Context.IsWorldReady) return;
-            if (!e.IsMultipleOf(60)) return;  // 每 1 秒
+            if (!e.IsMultipleOf(30)) return;  // 每 0.5 秒
 
             tickCount++;
 
             // 每秒写一次状态（供 Python 监控）
-            var state = GameStateReader.Read(Monitor);
-            GameStateReader.WriteState(state, Monitor);
+            if (tickCount % 2 == 0)
+            {
+                var state = GameStateReader.Read(Monitor);
+                GameStateReader.WriteState(state, Monitor);
+            }
 
-            // 检查 AI 消息
-            CheckAIMessage();
+            // 检查 AI 回复
+            CheckAIReply();
         }
 
-        private void CheckAIMessage()
+        private void CheckAIReply()
         {
             try
             {
-                var chatMsgFile = Path.Combine(GameConfig.AIDir, "ai_message.json");
-                if (!File.Exists(chatMsgFile)) return;
+                var replyFile = Path.Combine(GameConfig.AIDir, "reply.json");
+                if (!File.Exists(replyFile)) return;
 
-                var json = File.ReadAllText(chatMsgFile);
-                var msgData = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
+                var json = File.ReadAllText(replyFile);
+                var reply = JsonSerializer.Deserialize<JsonElement>(json);
                 
-                long timestamp = msgData.GetProperty("Timestamp").GetInt64();
-                string text = msgData.GetProperty("Text").GetString();
+                long timestamp = reply.GetProperty("timestamp").GetInt64();
+                string text = reply.GetProperty("text").GetString();
 
                 // 只处理新消息
-                if (timestamp > _lastMessageTimestamp)
+                if (timestamp > _lastReplyTimestamp)
                 {
-                    _lastMessageTimestamp = timestamp;
+                    _lastReplyTimestamp = timestamp;
                     if (!string.IsNullOrEmpty(text))
                     {
+                        // 删除文件
+                        File.Delete(replyFile);
+                        
+                        // 显示在主机聊天框
                         Game1.chatBox.addMessage(text, Microsoft.Xna.Framework.Color.Cyan);
                         Monitor.Log($"[主机] AI 说: {text}", LogLevel.Info);
                     }
@@ -226,8 +240,8 @@ namespace AICompanion
             }
             catch (Exception ex)
             {
-                // 检查消息失败不影响主功能
-                Monitor.Log($"[主机] 检查 AI 消息失败: {ex.Message}", LogLevel.Debug);
+                // 检查失败不影响主功能
+                Monitor.Log($"[主机] 检查 AI 回复失败: {ex.Message}", LogLevel.Debug);
             }
         }
 

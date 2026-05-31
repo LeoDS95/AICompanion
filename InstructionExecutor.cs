@@ -470,39 +470,11 @@ namespace AICompanion
             if (string.IsNullOrEmpty(inst.Text))
                 return new InstructionResult { Success = false, Action = "say", Error = "缺少文本" };
 
-            // 用 SMAPI 多人 API 发送消息（所有玩家可见）
-            if (helper != null)
-            {
-                try
-                {
-                    // 写入共享文件，主机实例会读取并显示
-                    var chatMsgFile = Path.Combine(Path.GetDirectoryName(GameConfig.StateFile), "ai_message.json");
-                    var msgData = new
-                    {
-                        Text = inst.Text,
-                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-                    };
-                    var json = System.Text.Json.JsonSerializer.Serialize(msgData,
-                        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText(chatMsgFile, json);
-                    
-                    // 本地也显示
-                    Game1.chatBox.addMessage(inst.Text, Microsoft.Xna.Framework.Color.Cyan);
-                    monitor.Log($"说话: {inst.Text}", LogLevel.Info);
-                }
-                catch (Exception ex)
-                {
-                    monitor.Log($"发送消息失败: {ex.Message}", LogLevel.Warn);
-                }
-            }
-            else
-            {
-                // 没有 helper，只在本地显示
-                Game1.chatBox.addMessage(inst.Text, Microsoft.Xna.Framework.Color.Cyan);
-                monitor.Log($"说话: {inst.Text}", LogLevel.Info);
-            }
+            // 通过游戏多人协议广播消息
+            bool ok = ChatBroadcaster.SendMessage(inst.Text);
 
-            return new InstructionResult { Success = true, Action = "say" };
+            monitor.Log($"说话({(ok ? "广播" : "失败")}): {inst.Text}", LogLevel.Info);
+            return new InstructionResult { Success = ok, Action = "say", Error = ok ? null : "广播失败" };
         }
 
         /// <summary>

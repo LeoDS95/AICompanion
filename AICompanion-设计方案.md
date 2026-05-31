@@ -1,6 +1,6 @@
 # AI Companion — 星露谷物语 AI 玩伴 Mod
 
-> 最后更新：2026-05-31 13:42 GMT+8
+> 最后更新：2026-05-31 14:28 GMT+8
 > 游戏路径：`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley`
 
 ---
@@ -28,29 +28,30 @@
 
 ---
 
-## 三、未完成 ❌
+## 三、核心问题 ❌
 
-### 1. 跨实例聊天（核心问题）
+### 跨实例聊天（未解决）
 
-**问题**：AI 回复的消息只出现在 AI 实例，主机看不到。
+**目标**：AI 回复的消息在主机聊天框显示。
 
-**尝试过的方法**：
-- ❌ `Game1.chatBox.addMessage()` → 只在本地显示
-- ❌ `helper.Multiplayer.SendMessage()` → SMAPI Mod 间通信，不触发游戏聊天框
+**已尝试的方案**：
 
-**需要解决**：让 AI 的消息在主机的聊天框里显示。
+| 方案 | 结果 | 原因 |
+|------|------|------|
+| `Game1.chatBox.addMessage()` | ❌ 只在本地显示 | 不走多人网络 |
+| `helper.Multiplayer.SendMessage()` | ❌ 无效果 | SMAPI Mod 间通信，不触发聊天框 |
+| `sendChatMessage(LanguageCode, String, Int64)` | ❌ 广播成功但不显示 | 可能只在主机端有效，客户端无效 |
+| 写 reply.json + 主机读取 | ❌ 待验证 | 主机 Mod 是否在运行？ |
 
-### 2. LLM 集成
+**当前方案**：
+```
+AI 实例 → 写 reply.json → 主机实例读取 → addMessage 显示
+```
 
-**目标**：玩家说话 → AI 理解 → 自主决策 → 执行动作
-
-**当前状态**：只做了 echo 回显测试，还没接大模型。
-
-### 3. 动作执行
-
-**目标**：AI 能自动浇水、挖矿、砍树、钓鱼等。
-
-**当前状态**：只有基础移动和传送，还没实现具体动作。
+**需要调试**：
+1. 主机实例的 Mod 是否在运行？
+2. reply.json 是否被正确读取？
+3. addMessage 是否在主机端生效？
 
 ---
 
@@ -100,6 +101,7 @@ AICompanion/                    # 源码目录
 ├── GameConfig.cs               # 通信路径配置
 ├── GameStateReader.cs          # 读取游戏状态
 ├── InstructionExecutor.cs      # 执行指令
+├── ChatBroadcaster.cs          # 聊天广播器（核心问题）
 ├── chat_listener.py            # Python 监听器
 └── ai_bridge.py                # Python 控制脚本（待完善）
 
@@ -111,6 +113,7 @@ AICompanion/                    # 源码目录
 ├── state.json                  # 游戏状态
 ├── instruction.json            # 指令文件
 ├── chat.json                   # 聊天消息
+├── reply.json                  # AI 回复（主机读取）
 └── persona.json                # AI 人设配置
 ```
 
@@ -118,32 +121,20 @@ AICompanion/                    # 源码目录
 
 ## 六、下一步
 
-### 优先级 1：跨实例聊天
+### 优先级 1：跨实例聊天（核心问题）
 
-**目标**：AI 回复的消息在主机聊天框显示。
-
-**可能的方案**：
-- 主机实例也运行监听脚本，读取共享文件
-- 用 Harmony 补丁 Hook 游戏的多人聊天系统
-- 研究 Stardew Valley 的多人聊天 API
+**需要调试**：
+1. 在主机 Mod 的 OnHostTick 加日志，确认是否在运行
+2. 检查 reply.json 是否被读取
+3. 检查 addMessage 是否生效
 
 ### 优先级 2：LLM 集成
 
 **目标**：玩家说话 → AI 理解 → 自主决策。
 
-**方案**：
-- Python 读取消息 + 游戏状态
-- 发送给 OpenClaw 或其他 LLM
-- LLM 返回决策
-- Python 写入指令
-
 ### 优先级 3：动作执行
 
 **目标**：AI 能执行浇水、挖矿、砍树、钓鱼等动作。
-
-**方案**：
-- 扩展指令集
-- 实现具体动作的执行逻辑
 
 ---
 
@@ -164,6 +155,6 @@ https://github.com/LeoDS95/AICompanion
 | 2026-05-31 | 指令执行 | ✅ |
 | 2026-05-31 | 聊天检测 | ✅ |
 | 2026-05-31 | Python 监听器 | ✅ |
-| TBD | 跨实例聊天 | ❌ 待解决 |
+| 2026-05-31 | 跨实例聊天 | ❌ 待解决 |
 | TBD | LLM 集成 | ❌ 待开发 |
 | TBD | 动作执行 | ❌ 待开发 |
