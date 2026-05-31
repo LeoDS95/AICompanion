@@ -258,14 +258,13 @@ def log(msg: str, level: str = "INFO"):
 
 def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> list:
     """
-    问 LLM 要一批指令（10 条）
+    问 LLM 要一批指令
     
     流程：
-    1. behaviors.py 返回行为意图
+    1. behaviors.py 返回行为意图（包含 goal）
     2. 把意图发给 LLM
-    3. LLM 决定具体说什么、做什么
-    
-    TODO: 接入 OpenClaw API
+    3. LLM 决定具体说什么
+    4. 返回指令列表（say + goal）
     """
     log("问 LLM 要指令")
     
@@ -273,7 +272,7 @@ def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> 
     
     # 1. 获取行为意图
     intent = decide(state, persona, player_message)
-    log(f"[意图] {intent['intent']}: {intent['context']}")
+    log(f"[意图] {intent['type']}: {intent['context']}")
     
     # 2. 构建 LLM prompt
     prompt = f"""你是星露谷的AI伙伴，正在和主人一起玩游戏。
@@ -288,7 +287,7 @@ def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> 
 建议：{intent['suggestion']}
 
 请用简短自然的话回复主人（1-2句话），然后执行建议的动作。
-只返回JSON格式：{{"say": "你说的话", "action": {{"Action": "动作类型", ...}}}}
+只返回JSON格式：{{"say": "你说的话"}}
 """
     
     # 3. TODO: 调用 LLM API
@@ -299,26 +298,32 @@ def ask_llm_for_action(state: dict, persona: dict, player_message: str = "") -> 
     batch = []
     
     # 根据意图生成简单的回复
-    if intent['intent'] == '早起问候':
+    if intent['type'] == 'morning_greeting':
         batch.append({"Action": "say", "Text": f"早安！{intent['context']}~"})
-    elif intent['intent'] == '天气判断':
-        batch.append({"Action": "say", "Text": f"{intent['context']}，{intent['suggestion']}~"})
-    elif intent['intent'] == '休息':
-        batch.append({"Action": "say", "Text": f"{intent['context']}，{intent['suggestion']}~"})
-    elif intent['intent'] == '回家睡觉':
-        batch.append({"Action": "say", "Text": f"{intent['context']}，{intent['suggestion']}~"})
-    elif intent['intent'] == '询问任务':
-        batch.append({"Action": "say", "Text": f"{intent['suggestion']}~"})
-    elif intent['intent'] == '自主决定':
-        batch.append({"Action": "say", "Text": f"{intent['suggestion']}~"})
-    elif intent['intent'] == '回答问题':
-        batch.append({"Action": "say", "Text": f"{intent['suggestion']}~"})
+    elif intent['type'] == 'weather_check':
+        batch.append({"Action": "say", "Text": f"{intent['context']}~"})
+    elif intent['type'] == 'rest':
+        batch.append({"Action": "say", "Text": f"{intent['context']}，休息一下~"})
+    elif intent['type'] == 'go_sleep':
+        batch.append({"Action": "say", "Text": f"{intent['context']}，晚安~"})
+    elif intent['type'] == 'ask_task':
+        batch.append({"Action": "say", "Text": f"主人，今天有什么要我做的吗？"})
+    elif intent['type'] == 'decline':
+        batch.append({"Action": "say", "Text": f"好的，那我自己安排啦~"})
+    elif intent['type'] == 'question':
+        batch.append({"Action": "say", "Text": f"让我查一下~"})
+    elif intent['type'] == 'comfort':
+        batch.append({"Action": "say", "Text": f"主人注意休息哦~"})
+    elif intent['type'] == 'festival_reminder':
+        batch.append({"Action": "say", "Text": f"今天是{intent['context']}！"})
+    elif intent['type'] == 'birthday_reminder':
+        batch.append({"Action": "say", "Text": f"{intent['context']}！"})
     else:
         batch.append({"Action": "say", "Text": f"{intent['suggestion']}~"})
     
-    # 添加动作
-    if intent['action']:
-        batch.append(intent['action'])
+    # 5. 添加目标（如果有的话）
+    if intent.get('goal'):
+        batch.append({"Action": "goal", "Text": intent['goal']})
     
     return batch[:10]
     

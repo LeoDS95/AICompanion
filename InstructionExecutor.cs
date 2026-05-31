@@ -94,6 +94,9 @@ namespace AICompanion
                     "emote"      => ExecuteEmote(instruction, monitor),
                     "wait"       => ExecuteWait(instruction, monitor),
 
+                    // ★ 高层意图（Python 决定做什么，Mod 决定怎么做）
+                    "goal"       => ExecuteGoal(instruction, monitor),
+
                     // ★ say 由 ModEntry.BroadcastChat() 处理，不应到达这里
                     "say"        => new InstructionResult
                     {
@@ -265,6 +268,193 @@ namespace AICompanion
                 new xTile.Dimensions.Location(x, y),
                 Game1.viewport
             );
+        }
+
+        // ── goal（高层意图执行）────────────────────────────────────────────
+        private static InstructionResult ExecuteGoal(Instruction inst, IMonitor monitor)
+        {
+            var goal = inst.Text?.ToLower();
+            if (string.IsNullOrEmpty(goal))
+                return new InstructionResult { Success = false, Action = "goal", Error = "缺少目标" };
+
+            monitor.Log($"[目标] 执行: {goal}", LogLevel.Info);
+
+            var player = Game1.player;
+            var location = player.currentLocation;
+            var locationName = location.Name;
+
+            return goal switch
+            {
+                "go_outside" => ExecuteGoOutside(player, location, locationName, monitor),
+                "go_home" => ExecuteGoHome(player, location, locationName, monitor),
+                "go_to_crops" => ExecuteGoToCrops(player, location, locationName, monitor),
+                "go_to_town" => ExecuteGoToTown(player, location, locationName, monitor),
+                "rest" => ExecuteRest(player, monitor),
+                "wander" => ExecuteWander(player, location, monitor),
+                "stay_inside" => new InstructionResult { Success = true, Action = "goal", Error = "待在室内" },
+                _ => new InstructionResult { Success = false, Action = "goal", Error = $"未知目标: {goal}" }
+            };
+        }
+
+        private static InstructionResult ExecuteGoOutside(Farmer player, GameLocation location, string locationName, IMonitor monitor)
+        {
+            // 如果在农舍/小屋，找到门并走出去
+            if (locationName.Contains("House") || locationName.Contains("Cabin"))
+            {
+                // 找到出口（通常是 warp 点）
+                foreach (var warp in location.warps)
+                {
+                    if (warp.TargetName.Contains("Farm") || warp.TargetName.Contains("Outside"))
+                    {
+                        // 走到出口
+                        var path = FindPath(
+                            (int)(player.Position.X / 64f),
+                            (int)(player.Position.Y / 64f),
+                            warp.X, warp.Y,
+                            location, monitor
+                        );
+
+                        if (path != null)
+                        {
+                            player.controller = new PathFindController(path, player, location);
+                            player.controller.endBehaviorFunction = (who, loc) =>
+                            {
+                                // 到达出口后触发换图
+                                Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
+                            };
+                            return new InstructionResult { Success = true, Action = "goal" };
+                        }
+                    }
+                }
+                return new InstructionResult { Success = false, Action = "goal", Error = "找不到出口" };
+            }
+
+            // 已经在室外
+            return new InstructionResult { Success = true, Action = "goal" };
+        }
+
+        private static InstructionResult ExecuteGoHome(Farmer player, GameLocation location, string locationName, IMonitor monitor)
+        {
+            // 如果已经在农舍/小屋
+            if (locationName.Contains("House") || locationName.Contains("Cabin"))
+                return new InstructionResult { Success = true, Action = "goal" };
+
+            // 找到农舍的 warp 点
+            foreach (var warp in location.warps)
+            {
+                if (warp.TargetName.Contains("House") || warp.TargetName.Contains("Cabin"))
+                {
+                    var path = FindPath(
+                        (int)(player.Position.X / 64f),
+                        (int)(player.Position.Y / 64f),
+                        warp.X, warp.Y,
+                        location, monitor
+                    );
+
+                    if (path != null)
+                    {
+                        player.controller = new PathFindController(path, player, location);
+                        player.controller.endBehaviorFunction = (who, loc) =>
+                        {
+                            Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
+                        };
+                        return new InstructionResult { Success = true, Action = "goal" };
+                    }
+                }
+            }
+
+            return new InstructionResult { Success = false, Action = "goal", Error = "找不到回家的路" };
+        }
+
+        private static InstructionResult ExecuteGoToCrops(Farmer player, GameLocation location, string locationName, IMonitor monitor)
+        {
+            // 如果在农舍，先出门
+            if (locationName.Contains("House") || locationName.Contains("Cabin"))
+            {
+                var result = ExecuteGoOutside(player, location, locationName, monitor);
+                if (!result.Success) return result;
+            }
+
+            // 走到作物区（农场中心附近）
+            var path = FindPath(
+                (int)(player.Position.X / 64f),
+                (int)(player.Position.Y / 64f),
+                40, 30,  // 作物区中心
+                player.currentLocation, monitor
+            );
+
+            if (path != null)
+            {
+                player.controller = new PathFindController(path, player, player.currentLocation);
+                return new InstructionResult { Success = true, Action = "goal" };
+            }
+
+            return new InstructionResult { Success = false, Action = "goal", Error = "找不到作物区" };
+        }
+
+        private static InstructionResult ExecuteGoToTown(Farmer player, GameLocation location, string locationName, IMonitor monitor)
+        {
+            // 如果在农舍，先出门
+            if (locationName.Contains("House") || locationName.Contains("Cabin"))
+            {
+                var result = ExecuteGoOutside(player, location, locationName, monitor);
+                if (!result.Success) return result;
+            }
+
+            // 找到去镇上的 warp
+            foreach (var warp in player.currentLocation.warps)
+            {
+                if (warp.TargetName.Contains("Town"))
+                {
+                    var path = FindPath(
+                        (int)(player.Position.X / 64f),
+                        (int)(player.Position.Y / 64f),
+                        warp.X, warp.Y,
+                        player.currentLocation, monitor
+                    );
+
+                    if (path != null)
+                    {
+                        player.controller = new PathFindController(path, player, player.currentLocation);
+                        player.controller.endBehaviorFunction = (who, loc) =>
+                        {
+                            Game1.warpFarmer(warp.TargetName, warp.TargetX, warp.TargetY, false);
+                        };
+                        return new InstructionResult { Success = true, Action = "goal" };
+                    }
+                }
+            }
+
+            return new InstructionResult { Success = false, Action = "goal", Error = "找不到去镇上的路" };
+        }
+
+        private static InstructionResult ExecuteRest(Farmer player, IMonitor monitor)
+        {
+            // 等待一段时间恢复体力
+            return new InstructionResult { Success = true, Action = "goal" };
+        }
+
+        private static InstructionResult ExecuteWander(Farmer player, GameLocation location, IMonitor monitor)
+        {
+            // 随机走动
+            var random = new Random();
+            int targetX = random.Next(10, location.Map.Layers[0].LayerWidth - 10);
+            int targetY = random.Next(10, location.Map.Layers[0].LayerHeight - 10);
+
+            var path = FindPath(
+                (int)(player.Position.X / 64f),
+                (int)(player.Position.Y / 64f),
+                targetX, targetY,
+                location, monitor
+            );
+
+            if (path != null)
+            {
+                player.controller = new PathFindController(path, player, location);
+                return new InstructionResult { Success = true, Action = "goal" };
+            }
+
+            return new InstructionResult { Success = false, Action = "goal", Error = "找不到闲逛目标" };
         }
 
         // ── interact ─────────────────────────────────────────────────────
