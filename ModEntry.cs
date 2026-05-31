@@ -15,9 +15,13 @@ namespace AICompanion
         private int tickCount = 0;
         private int waitTicksRemaining = 0;
         private string lastInstructionHash = "";
+        private ChatWindow _chatWindow;
+        private IModHelper _helper;
 
         public override void Entry(IModHelper helper)
         {
+            _helper = helper;
+            
             var gameDir = Directory.GetParent(
                 Directory.GetParent(helper.DirectoryPath).FullName
             ).FullName;
@@ -31,6 +35,10 @@ namespace AICompanion
 
             if (File.Exists(GameConfig.InstructionFile))
                 File.Delete(GameConfig.InstructionFile);
+
+            // ── 初始化聊天窗口 ──────────────────────────────────────────
+            _chatWindow = new ChatWindow(Monitor, helper);
+            _chatWindow.OnMessageSent += OnPlayerMessageSent;
 
             // ── 事件注册 ────────────────────────────────────────────────
             helper.Events.GameLoop.UpdateTicked    += OnUpdateTicked;
@@ -50,6 +58,11 @@ namespace AICompanion
             if (e.Type != MSG_CHAT) return;
 
             var text = e.ReadAs<string>();
+            
+            // 显示在自建聊天窗口
+            _chatWindow?.AddMessage("AI", text, Color.Cyan);
+            
+            // 同时也显示在游戏聊天框（作为备份）
             Game1.chatBox?.addMessage(text, Color.White);
             Monitor.Log($"[AI聊天] 收到并显示: {text}", LogLevel.Info);
         }
@@ -71,8 +84,33 @@ namespace AICompanion
             else
             {
                 // 单人模式：MessageReceived 不会触发，直接写本地
+                _chatWindow?.AddMessage("AI", text, Color.Cyan);
                 Game1.chatBox?.addMessage(text, Color.White);
                 Monitor.Log($"[AI聊天] 单人显示: {text}", LogLevel.Info);
+            }
+        }
+
+        // ── 处理玩家消息 ─────────────────────────────────────────────
+        private void OnPlayerMessageSent(string message)
+        {
+            // 写入 chat.json 供 Python 读取
+            try
+            {
+                var chatFile = Path.Combine(GameConfig.AIDir, "chat.json");
+                var chatData = new
+                {
+                    Sender = "主人",
+                    Message = message,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                };
+                var json = System.Text.Json.JsonSerializer.Serialize(chatData,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(chatFile, json);
+                Monitor.Log($"[玩家消息] 写入 chat.json: {message}", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[玩家消息] 写入失败: {ex.Message}", LogLevel.Warn);
             }
         }
 
@@ -139,6 +177,9 @@ namespace AICompanion
             {
                 var state = GameStateReader.Read(Monitor);
                 GameStateReader.WriteState(state, Monitor);
+
+                // 检测玩家聊天消息
+                CheckChatMessages();
             }
 
             // 4. 每 30 秒打一次日志
@@ -177,6 +218,98 @@ namespace AICompanion
                 if (File.Exists(GameConfig.InstructionFile)) File.Delete(GameConfig.InstructionFile);
             }
             catch { }
+        }
+
+        // ── 聊天检测 ─────────────────────────────────────────────────────
+        private int _lastChatCount = 0;
+
+        private void CheckChatMessages()
+        {
+            try
+            {
+                var chatBox = Game1.chatBox;
+                if (chatBox == null) return;
+
+                var messagesField = chatBox.GetType().GetField("messages",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (messagesField?.GetValue(chatBox) is System.Collections.IList messages)
+                {
+                    int currentCount = messages.Count;
+                    if (currentCount > _lastChatCount)
+                    {
+                        for (int i = _lastChatCount; i < currentCount; i++)
+                        {
+                            var msg = messages[i];
+                            
+                            // 尝试提取消息文本
+                            string messageText = null;
+                            
+                            // 方法1: 尝试获取 message 字段
+                            var msgField = msg.GetType().GetField("message",
+                                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            if (msgField != null)
+                            {
+                                var value = msgField.GetValue(msg);
+                                if (value is string text)
+                                    messageText = text;
+                                else if (value is System.Collections.IList snippets)
+                                {
+                                    var sb = new System.Text.StringBuilder();
+                                    foreach (var snippet in snippets)
+                                    {
+                                        var snippetField = snippet.GetType().GetField("message",
+                                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                        if (snippetField != null)
+                                            sb.Append(snippetField.GetValue(snippet));
+                                    }
+                                    messageText = sb.ToString();
+                                }
+                            }
+                            
+                            // 方法2: 尝试获取 text 属性
+                            if (string.IsNullOrEmpty(messageText))
+                            {
+                                var textProp = msg.GetType().GetProperty("text",
+                                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                if (textProp != null)
+                                    messageText = textProp.GetValue(msg)?.ToString();
+                            }
+
+                            if (!string.IsNullOrEmpty(messageText))
+                            {
+                                Monitor.Log($"[聊天] {messageText}", LogLevel.Info);
+                                WriteChatMessage("主人", messageText);
+                            }
+                        }
+                        _lastChatCount = currentCount;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[聊天] 检测失败: {ex.Message}", LogLevel.Debug);
+            }
+        }
+
+        private void WriteChatMessage(string sender, string message)
+        {
+            try
+            {
+                var chatFile = Path.Combine(GameConfig.AIDir, "chat.json");
+                var chatData = new
+                {
+                    Sender = sender,
+                    Message = message,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                };
+                var json = System.Text.Json.JsonSerializer.Serialize(chatData,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(chatFile, json);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[聊天] 写入失败: {ex.Message}", LogLevel.Warn);
+            }
         }
     }
 }
