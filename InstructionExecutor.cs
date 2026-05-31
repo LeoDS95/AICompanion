@@ -260,8 +260,11 @@ namespace AICompanion
             int py = (int)(Game1.player.Position.Y / 64f);
             if (x == px && y == py) return true;
 
-            var rect = new Rectangle(x * 64, y * 64, 64, 64);
-            return !loc.isCollidingPosition(rect, Game1.viewport, true, 0, false, Game1.player);
+            // ✅ 用 isTilePassable 检查 tile 属性（不检查家具碰撞体）
+            return loc.isTilePassable(
+                new xTile.Dimensions.Location(x, y),
+                Game1.viewport
+            );
         }
 
         // ── interact ─────────────────────────────────────────────────────

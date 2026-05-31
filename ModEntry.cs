@@ -537,6 +537,14 @@ namespace AICompanion
             // ── 2. AI 实例处理指令 ──────────────────────────────────────
             if (Context.IsMultiplayer && !Context.IsMainPlayer)
             {
+                // 写 state.json（供 Python 脚本读取）
+                if (tickCount % 2 == 0)
+                {
+                    var state = GameStateReader.Read(Monitor);
+                    GameStateReader.WriteState(state, Monitor);
+                }
+
+                // 处理指令
                 var instruction = InstructionExecutor.ReadInstruction(Monitor);
                 if (instruction != null)
                 {
@@ -601,7 +609,9 @@ namespace AICompanion
                             if (!string.IsNullOrEmpty(messageText))
                             {
                                 Monitor.Log($"[聊天] {messageText}", LogLevel.Info);
+                                Monitor.Log($"[调试] 准备写入 chat.json", LogLevel.Debug);
                                 WriteChatJson("主人", messageText);
+                                Monitor.Log($"[调试] chat.json 写入完成", LogLevel.Debug);
                             }
                         }
                         _lastChatCount = currentCount;

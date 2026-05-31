@@ -48,10 +48,24 @@ class ActionQueue:
         self.queue = []
         self.executed = 0
         self.need_ask_ai = True  # 启动时需要问 AI 要第一批指令
+        self._recent_messages = []  # 最近发过的消息（去重用）
     
     def add_batch(self, instructions: list):
         """AI 一次给多个指令"""
-        self.queue = instructions
+        # 去重：过滤掉最近发过的消息
+        filtered = []
+        for inst in instructions:
+            if inst.get("Action") == "say":
+                text = inst.get("Text", "")
+                if text in self._recent_messages:
+                    continue  # 跳过重复消息
+                self._recent_messages.append(text)
+                # 只保留最近 10 条
+                if len(self._recent_messages) > 10:
+                    self._recent_messages.pop(0)
+            filtered.append(inst)
+        
+        self.queue = filtered
         self.executed = 0
         self.need_ask_ai = False
     
