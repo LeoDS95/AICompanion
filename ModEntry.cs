@@ -132,7 +132,12 @@ namespace AICompanion
                 getValue: () => Config.APIKey,
                 setValue: value => Config.APIKey = value,
                 name: () => "API Key",
-                tooltip: () => "输入你的 API Key"
+                tooltip: () =>
+                {
+                    if (Config.LLMProvider == "MiMo")
+                        return "MiMo 有两种 Key:\n1. Token Plan（订阅制，按月/年）\n2. Credits（按量付费）\n两种都可以用，去 platform.xiaomimimo.com 获取";
+                    return "输入你的 API Key";
+                }
             );
 
             configMenu.AddTextOption(
@@ -173,7 +178,103 @@ namespace AICompanion
                 tooltip: () => "开启 AI 陪伴互动（主动打招呼、关心、闲聊）"
             );
 
+            // ── API 测试 ──────────────────────────────────────────────
+            configMenu.AddSectionTitle(
+                mod: ModManifest,
+                text: () => "API 测试"
+            );
+
+            configMenu.AddParagraph(
+                mod: ModManifest,
+                text: () => "点击下面的开关测试 API 连接，结果会显示在 SMAPI 控制台"
+            );
+
+            configMenu.AddBoolOption(
+                mod: ModManifest,
+                getValue: () => false,
+                setValue: value =>
+                {
+                    if (value)
+                    {
+                        TestAPIConnection();
+                    }
+                },
+                name: () => "▶ 测试 API 连接",
+                tooltip: () => "点击测试当前 API 配置是否正确"
+            );
+
             Monitor.Log("[GMCM] 设置页面注册成功", LogLevel.Info);
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // API 测试
+        // ══════════════════════════════════════════════════════════════
+
+        private void TestAPIConnection()
+        {
+            Monitor.Log("[API 测试] 开始测试...", LogLevel.Info);
+            Monitor.Log($"[API 测试] 提供商: {Config.LLMProvider}", LogLevel.Info);
+            Monitor.Log($"[API 测试] Base URL: {Config.BaseURL}", LogLevel.Info);
+            Monitor.Log($"[API 测试] 模型: {Config.Model}", LogLevel.Info);
+
+            if (string.IsNullOrEmpty(Config.APIKey))
+            {
+                Monitor.Log("[API 测试] ❌ API Key 为空！", LogLevel.Error);
+                return;
+            }
+
+            Monitor.Log($"[API 测试] API Key: {Config.APIKey[..8]}...{Config.APIKey[^4..]}", LogLevel.Info);
+
+            try
+            {
+                using var client = new System.Net.Http.HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(10);
+
+                // 设置请求头
+                if (Config.LLMProvider == "Claude")
+                {
+                    client.DefaultRequestHeaders.Add("x-api-key", Config.APIKey);
+                    client.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+                }
+                else
+                {
+                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {Config.APIKey}");
+                }
+
+                // 发送测试请求
+                var requestBody = new
+                {
+                    model = Config.Model,
+                    messages = new[]
+                    {
+                        new { role = "user", content = "Say 'API test successful' in 5 words or less." }
+                    },
+                    max_tokens = 50
+                };
+
+                var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
+                var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+                string endpoint = Config.LLMProvider == "Claude" ? "/messages" : "/chat/completions";
+                var response = client.PostAsync($"{Config.BaseURL}{endpoint}", content).Result;
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseBody = response.Content.ReadAsStringAsync().Result;
+                    Monitor.Log($"[API 测试] ✅ 连接成功！", LogLevel.Info);
+                    Monitor.Log($"[API 测试] 响应: {responseBody[..Math.Min(200, responseBody.Length)]}...", LogLevel.Info);
+                }
+                else
+                {
+                    var errorBody = response.Content.ReadAsStringAsync().Result;
+                    Monitor.Log($"[API 测试] ❌ 连接失败: {response.StatusCode}", LogLevel.Error);
+                    Monitor.Log($"[API 测试] 错误: {errorBody[..Math.Min(200, errorBody.Length)]}", LogLevel.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"[API 测试] ❌ 异常: {ex.Message}", LogLevel.Error);
+            }
         }
 
         // ══════════════════════════════════════════════════════════════
