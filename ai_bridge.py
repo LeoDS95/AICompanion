@@ -106,6 +106,19 @@ class GameConnection:
                 time.sleep(0.05)
         return None
 
+    def read_chat(self) -> dict | None:
+        """读取玩家消息"""
+        chat_file = os.path.join(AI_DIR, "chat.json")
+        try:
+            if not os.path.exists(chat_file):
+                return None
+            with open(chat_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            os.remove(chat_file)
+            return data
+        except (json.JSONDecodeError, IOError):
+            return None
+
     def write_instruction(self, instruction: dict) -> bool:
         tmp = INSTRUCTION_FILE + ".tmp"
         try:
@@ -353,16 +366,17 @@ class AIBridge:
             self._handle_waiting_execute(game_state)
 
     def _handle_idle(self, game_state: dict):
-        """IDLE 状态：判断是否应该触发 LLM"""
-        is_waiting = game_state.get("WaitingForInstruction", False)
-        is_walking = game_state.get("IsWalking", False)
-        inst_pending = self.conn.instruction_pending()
-        cooldown_ok = (time.time() - self.last_llm_time) >= LLM_COOLDOWN
-
-        if is_walking or inst_pending or not is_waiting or not cooldown_ok:
-            return
-
-        self._ask_llm(game_state)
+        """IDLE 状态：只在玩家说话时触发 LLM"""
+        # 检查玩家消息
+        chat = self.conn.read_chat()
+        if chat:
+            player_msg = chat.get("Message", "")
+            if player_msg:
+                log(f"[玩家] {player_msg}")
+                self._ask_llm(game_state, player_msg)
+                return
+        
+        # 没有玩家消息 → 不触发 LLM，继续等待
 
     def _handle_waiting_execute(self, game_state: dict):
         """等待游戏把指令消费掉"""
@@ -384,7 +398,7 @@ class AIBridge:
             log(f"指令执行完毕（用时 {elapsed:.1f}s），回到 IDLE")
             self.state = BridgeState.IDLE
 
-    def _ask_llm(self, game_state: dict):
+    def _ask_llm(self, game_state: dict, player_message: str = ""):
         """调用 LLM，获取指令，写入文件"""
         self.state = BridgeState.LLM_THINKING
         self.last_llm_time = time.time()
@@ -393,7 +407,7 @@ class AIBridge:
             f"时间:{game_state.get('TimeString')} "
             f"体力:{game_state.get('Energy')}/{game_state.get('MaxEnergy')}")
 
-        prompt = build_prompt(game_state, self.persona)
+        prompt = build_prompt(game_state, player_message)
 
         if self.dry_run:
             log("[DRY-RUN] 跳过 LLM 调用，打印 prompt：")
@@ -431,6 +445,7 @@ class AIBridge:
 # ============================================================
 
 def main():
+    global LLM_COOLDOWN
     parser = argparse.ArgumentParser(description="AI Companion Bridge v3")
     parser.add_argument("--dry-run", action="store_true",
                         help="只读状态打印 prompt，不调用 LLM、不写指令（调试用）")
@@ -438,7 +453,6 @@ def main():
                         help=f"LLM 调用冷却秒数（默认 {LLM_COOLDOWN}）")
     args = parser.parse_args()
 
-    global LLM_COOLDOWN
     LLM_COOLDOWN = args.cooldown
 
     # 加载配置
